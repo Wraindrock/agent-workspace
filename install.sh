@@ -56,6 +56,9 @@ QUIET=0
 STRICT=0
 PURGE_SNAPSHOTS=0
 KEEP_VOLUME=0
+# a rollback snapshots the container it is about to replace; --skip-safety turns
+# that off when the container is known to be broken beyond snapshotting
+SKIP_SAFETY=0
 LOGS_FOLLOW=0
 LOGS_TAIL=50
 FORK_LIVE=0
@@ -159,6 +162,7 @@ global options
   --keep N                      snapshot only: keep the newest N snapshots (default 5)
   --purge-snapshots             remove: drop snapshots too
   --keep-volume                 remove: keep the home volume
+  --skip-safety                 rollback: do not snapshot the container first
   --follow, -f / --tail N       logs: follow the log / show the last N lines
   --help-agents                 list the agents this build offers
   --help, -h                    this help
@@ -583,6 +587,7 @@ parse_args() {
       --keep) SNAPSHOT_KEEP="${2}"; shift 2 ;;
       --purge-snapshots) PURGE_SNAPSHOTS=1; shift ;;
       --keep-volume) KEEP_VOLUME=1; shift ;;
+      --skip-safety) SKIP_SAFETY=1; shift ;;
       --follow|-f) LOGS_FOLLOW=1; shift ;;
       --tail) LOGS_TAIL="${2}"; shift 2 ;;
       --live) FORK_LIVE=1; shift ;;

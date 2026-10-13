@@ -20,8 +20,8 @@ The id is a UTC timestamp (`20260113T090000Z`), and each snapshot directory carr
 with. The newest `5` snapshots are kept by default (`--keep N` or `SNAPSHOT_KEEP`).
 
 Labels are recorded for you: `manual` for snapshots you take, `pre-upgrade` for the
-snapshot `upgrade` takes automatically, and `fork-source` for the one `fork` takes
-before branching.
+snapshot `upgrade` takes automatically, `pre-rollback` for the safety snapshot
+`rollback` takes, and `fork-source` for the one `fork` takes before branching.
 
 ~~~bash
 ./install.sh snapshot dsh-box --label before-refactor
@@ -37,7 +37,15 @@ container from the snapshot image with the same name, agent, mode and workspace.
 ~~~bash
 ./install.sh rollback dsh-box                  # the latest snapshot
 ./install.sh rollback dsh-box --to 20260113T090000Z
+./install.sh rollback dsh-box --skip-safety    # do not snapshot the old container
 ~~~
+
+A rollback is itself undoable. Before it changes anything it checks that the
+snapshot's home archive can really be read back (`tar -tzf`), so a truncated or
+half-written archive stops the command with nothing touched. Then it snapshots the
+container it is about to replace, labelled `pre-rollback`, and only then removes and
+recreates it; `--skip-safety` turns that snapshot off when you already have what you
+need - for example when the container you are replacing is broken.
 
 The snapshot image must still be in the local engine store - these images are local
 by design and are never pushed to a registry. If it is gone, the installer stops and
@@ -92,6 +100,25 @@ the new image misbehaves:
 ./install.sh rollback dsh-box --to <the pre-upgrade id>
 ~~~
 
+## Snapshots the installer will not delete
+
+Snapshots are local images, and local images can be in use. When retention (`--keep`)
+or `remove --purge-snapshots` needs to delete one, the installer asks the engine
+first:
+
+- if a container still runs from the snapshot's image - including a container this
+  installer does not manage - the snapshot and its archive are kept and the reason is
+  printed together with the container name;
+- `remove --purge-snapshots` reports how many snapshots it kept for that reason
+  instead of forcing the image away, so the number is never silently wrong;
+- if the image cannot be removed for any other reason, the snapshot metadata and
+  archive stay too. Remove the container it names (or `podman rmi` it yourself) and
+  the next prune takes it.
+
+`snapshot` applies the same idea to its own output: it reads the home archive it just
+wrote and deletes it again if the read fails, keeping the filesystem snapshot, so no
+snapshot can silently restore a half-written home directory.
+
 ## What snapshots do not cover
 
 - **The host workspace.** `/workspace` is a bind mount of a directory on your host;
@@ -101,5 +128,12 @@ the new image misbehaves:
 - **Other hosts.** Snapshots are local images plus a local archive. To move a
   container elsewhere, `snapshot`, then save the image and the archive and load them
   on the other machine - or rebuild the container from the declaration file.
+- **A damaged local store.** The snapshot image lives only in your engine's storage
+  and the home archive only on this host. If either is lost (somebody ran `podman
+  rmi`, the disk holding it failed), the installer stops and tells you instead of
+  handing you a half-restored container: the archive alone cannot rebuild a
+  filesystem, and the image alone cannot rebuild your home volume. `./install.sh
+  doctor --strict` is the cheap check - it verifies that the recorded images still
+  exist and that every snapshot archive is a readable tarball.
 - **Your host system.** Nothing in this project updates, pins or rolls back the OS
   you are running the containers on. That is your distribution's job.

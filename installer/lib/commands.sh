@@ -370,6 +370,15 @@ cmd_web() {
 
 # --- snapshots -------------------------------------------------------------
 
+# home_archive_ok ARCHIVE succeeds when a home archive exists and can be listed
+# back. A snapshot that cannot restore the home is worse than no snapshot, so
+# anything that fails here is never kept.
+home_archive_ok() {
+  local archive="${1}"
+  [[ -s "$archive" ]] || return 1
+  tar -tzf "$archive" >/dev/null 2>&1
+}
+
 archive_home_volume() {
   local name="${1}" id="${2}" volume="" dir="" image=""
   volume="$(container_home_volume "$name")"
@@ -381,14 +390,19 @@ archive_home_volume() {
   fi
   if run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data:ro" \
       --volume "${dir}:/backup$(engine_mount_suffix)" "$image" czf /backup/home.tar.gz -C /data .; then
-    ok "archived the home volume into ${dir}/home.tar.gz"
+    if home_archive_ok "${dir}/home.tar.gz"; then
+      ok "archived the home volume into ${dir}/home.tar.gz"
+    else
+      rm -f "${dir}/home.tar.gz"
+      warn "the home archive could not be read back; deleted it so snapshot ${id} cannot silently restore a broken home"
+    fi
   else
     warn "could not archive ${volume} (no tar in the image?); the snapshot holds the filesystem only"
   fi
 }
 
 restore_home_volume() {
-  local name="${1}" id="${2}" volume="" dir="" image=""
+  local name="${1}" id="${2}" volume="" dir="" image="" entries=""
   volume="$(container_home_volume "$name")"
   dir="$(snapshot_path "$name" "$id")"
   image="$(snapshot_image "$name" "$id")"
@@ -396,16 +410,24 @@ restore_home_volume() {
     warn "snapshot ${id} has no home archive; the home volume is left as it is"
     return 0
   fi
+  if ! home_archive_ok "${dir}/home.tar.gz"; then
+    die "the home archive of snapshot ${id} is unreadable (${dir}/home.tar.gz); nothing was changed"
+  fi
+  entries="$(tar -tzf "${dir}/home.tar.gz" 2>/dev/null | grep -c . || true)"
   if ! eng_volume_exists "$volume"; then
     run_engine volume create "$volume" >/dev/null
   fi
   run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data" \
     --volume "${dir}:/backup$(engine_mount_suffix)" "$image" xzf /backup/home.tar.gz -C /data
-  ok "restored the home volume from snapshot ${id}"
+  ok "restored the home volume from snapshot ${id} (${entries:-0} entries)"
 }
 
+# cmd_snapshot NAME [LABEL] [SOFT] commits the filesystem and archives the home
+# volume. SOFT=1 turns a failure into a warning and a non-zero return, which is
+# what the safety snapshot in a rollback needs: a broken container must not stop
+# the repair the user asked for.
 cmd_snapshot() {
-  local name="${1}" label="${2:-manual}" id="" ref="" dir=""
+  local name="${1}" label="${2:-manual}" soft="${3:-0}" id="" ref="" dir=""
   require_container "$name"
   state_engine "$name"
   id="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -417,6 +439,10 @@ cmd_snapshot() {
   install -d -m 0700 "$dir"
   if ! eng_commit "$name" "$ref"; then
     rm -rf "$dir"
+    if [[ "$soft" -eq 1 ]]; then
+      warn "could not snapshot ${name} before this operation; continuing without a safety snapshot"
+      return 1
+    fi
     die "could not snapshot ${name}; is the container present? (try: install.sh recover ${name})"
   fi
   create_snapshot_meta "$name" "$id" "$label" "$ref"
@@ -467,7 +493,7 @@ resolve_snapshot() {
 }
 
 cmd_rollback() {
-  local name="${1}" target="${2:-}" id="" ref="" agent="" mode="" workspace="" declared=""
+  local name="${1}" target="${2:-}" id="" ref="" agent="" mode="" workspace="" declared="" archive=""
   require_container "$name"
   state_engine "$name"
   id="$(resolve_snapshot "$name" "$target")"
@@ -475,12 +501,28 @@ cmd_rollback() {
   if [[ "${DRY_RUN:-0}" -eq 0 ]] && ! eng_image_exists "$ref"; then
     die "snapshot image ${ref} is gone; snapshot ${id} cannot be restored"
   fi
+  # refuse before anything is destroyed: a container that has already been
+  # removed cannot be brought back if the archive turns out to be unreadable
+  archive="$(snapshot_path "$name" "$id")/home.tar.gz"
+  if [[ -e "$archive" ]] && ! home_archive_ok "$archive"; then
+    die "the home archive of snapshot ${id} is unreadable (${archive}); nothing was changed"
+  fi
   confirm "Replace container ${name} with snapshot ${id}?" || { warn "aborted"; return 0; }
   agent="$(container_agent "$name")"
   mode="$(container_mode "$name")"
   workspace="$(container_workspace "$name")"
   declared="$(snapshot_get "$name" "$id" IMAGE)"
   [[ -n "$declared" ]] || declared="$(state_get "$name" IMAGE)"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    printf 'dry-run: would snapshot %s before rolling it back\n' "$name"
+  elif [[ "${SKIP_SAFETY:-0}" -eq 1 ]]; then
+    msg "skipping the safety snapshot (--skip-safety)"
+  elif eng_container_exists "$name"; then
+    # the container is replaced below; keep what it looks like now, so a
+    # rollback that turns out to be a mistake is itself reversible
+    msg "snapshotting ${name} before the rollback"
+    cmd_snapshot "$name" "pre-rollback" 1 || true
+  fi
   eng_stop "$name"
   eng_remove "$name"
   restore_home_volume "$name" "$id"
@@ -630,11 +672,18 @@ cmd_remove() {
   fi
   rm -f "$(env_file_for "$name")"
   if [[ "${PURGE_SNAPSHOTS:-0}" -eq 1 ]]; then
+    local kept=0
     while IFS= read -r id; do
       [[ -n "$id" ]] || continue
-      snapshot_delete "$name" "$id"
+      # force=1 drops the records the user asked to drop, but never the image a
+      # container still runs from (image_in_use in installer/lib/state.sh)
+      snapshot_delete "$name" "$id" 1 || kept=$((kept + 1))
     done < <(snapshot_list "$name")
-    rm -rf "$(snapshot_root "$name")"
+    if [[ "$kept" -eq 0 ]]; then
+      rm -rf "$(snapshot_root "$name")"
+    else
+      msg "kept ${kept} snapshot(s) whose image is still in use: $(snapshot_root "$name")"
+    fi
   else
     msg "kept snapshots for ${name} in $(snapshot_root "$name")"
   fi

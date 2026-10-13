@@ -276,6 +276,31 @@ contains "rollback reports the snapshot" "rolled box1 back to snapshot $SNAP" "$
 is "the volume was restored" v1 "$(cat "$(volume_path box1)/secret.txt" 2>/dev/null)"
 is "the container is running again" running "$(fake_state box1)"
 is "the rollback image is recorded" "agent-workspace/snapshot-box1:$SNAP" "$(meta_key box1 RUN_IMAGE)"
+contains "rollback snapshots the container it replaces" "snapshotting box1 before the rollback" "$RUN_OUT"
+contains "rollback reports how much was restored" "entries)" "$RUN_OUT"
+PRE_ROLLBACK=""
+for id in $(snap_ids box1); do
+  if [[ "$(snap_label box1 "$id")" == "pre-rollback" ]]; then PRE_ROLLBACK="$id"; fi
+done
+if [[ -n "$PRE_ROLLBACK" ]]; then pass "a pre-rollback snapshot exists"; else fail "a pre-rollback snapshot exists"; fi
+valid_tar "the pre-rollback archive is a real tarball" "$(snap_root box1)/$PRE_ROLLBACK/home.tar.gz"
+
+BEFORE_SNAPS="$(snap_count box1)"
+run rollback box1 --to "$SNAP" --yes --skip-safety
+is "rollback --skip-safety exits 0" 0 "$RUN_STATUS"
+contains "the skipped safety snapshot is reported" "skipping the safety snapshot" "$RUN_OUT"
+is "--skip-safety takes no snapshot" "$BEFORE_SNAPS" "$(snap_count box1)"
+
+# a broken archive must be refused before the container is destroyed
+cp "$(snap_root box1)/$SNAP/home.tar.gz" "$WORK/archive.bak"
+printf 'broken\n' >"$(snap_root box1)/$SNAP/home.tar.gz"
+run rollback box1 --to "$SNAP" --yes
+is "rolling back to a corrupt archive fails" 1 "$RUN_STATUS"
+contains "the corrupt archive is reported" "unreadable" "$RUN_OUT"
+is "the container is left running" running "$(fake_state box1)"
+is "the corrupt rollback changed nothing" "agent-workspace/snapshot-box1:$SNAP" "$(meta_key box1 RUN_IMAGE)"
+cp "$WORK/archive.bak" "$(snap_root box1)/$SNAP/home.tar.gz"
+
 run rollback box1 --to nope --yes
 is "rolling back to an unknown snapshot fails" 1 "$RUN_STATUS"
 contains "the unknown snapshot is reported" "not found" "$RUN_OUT"
@@ -356,6 +381,53 @@ run snapshot prune1 --keep 2
 is "only the newest snapshots are kept" 2 "$(snap_count prune1)"
 
 # =========================================================================
+echo "snapshot safety"
+# a write that leaves an unreadable archive is not kept as a silent promise
+run create --agent dsh --name badarc --yes
+mkdir -p "$(volume_path badarc)"
+printf 'data\n' >"$(volume_path badarc)/file.txt"
+export FAKE_ENGINE_BAD_ARCHIVE=1
+run snapshot badarc --label broken
+unset FAKE_ENGINE_BAD_ARCHIVE
+is "a snapshot with an unreadable home archive exits 0" 0 "$RUN_STATUS"
+contains "the unreadable archive is reported" "could not be read back" "$RUN_OUT"
+missing "the unreadable archive is deleted" "$(snap_root badarc)/$(latest_snap badarc)/home.tar.gz"
+exists "the filesystem snapshot is kept" "$(snap_root badarc)/$(latest_snap badarc)/meta"
+run remove badarc --yes
+
+# a snapshot image another container is running from survives pruning
+run create --agent dsh --name keeper --yes
+run snapshot keeper
+KEEP_SNAP="$(latest_snap keeper)"
+run rollback keeper --to "$KEEP_SNAP" --yes
+run fork keeper keeplive --workspace "$WORKSPACE_ROOT/keeplive" --live --yes
+run snapshot keeper --keep 1
+contains "pruning reports the container that runs from a snapshot" "still used by" "$RUN_OUT"
+exists "the in-use snapshot record is kept" "$(snap_root keeper)/$KEEP_SNAP"
+exists "the in-use snapshot image is kept" "$FAKE_ENGINE_STATE/images/agent-workspace_snapshot-keeper_$KEEP_SNAP"
+is "the in-use snapshot survives the prune" 2 "$(snap_count keeper)"
+OLDEST_UNUSED="$(latest_snap keeper)"
+run snapshot keeper --keep 1
+is "an unused older snapshot is still pruned" 2 "$(snap_count keeper)"
+missing "the unused snapshot is gone" "$(snap_root keeper)/$OLDEST_UNUSED"
+
+# an image a container this installer does not manage still runs from: the engine
+# refuses to remove it even though no state file mentions it
+run create --agent dsh --name pin1 --yes
+run snapshot pin1 --keep 1
+PIN_SNAP="$(latest_snap pin1)"
+run rollback pin1 --to "$PIN_SNAP" --yes --skip-safety
+FAKE_ENGINE_NAME=podman FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" \
+  "$FAKE" run --name sidecar --detach "agent-workspace/snapshot-pin1:$PIN_SNAP" >/dev/null
+run upgrade pin1 --image ghcr.io/wraindrock/agent-workspace:next --yes
+run snapshot pin1 --keep 1
+contains "an engine-only holder is reported" "could not be removed" "$RUN_OUT"
+exists "the pinned snapshot is kept" "$(snap_root pin1)/$PIN_SNAP"
+remove_container sidecar
+run remove pin1 --yes
+rm -rf "$(data)/snapshots/pin1"
+
+# =========================================================================
 echo "doctor"
 run remove once --yes
 run remove decl2 --yes
@@ -386,7 +458,10 @@ exists "the volume is kept with --keep-volume" "$(volume_path decl1)"
 
 run remove box1 --purge-snapshots --yes
 is "remove --purge-snapshots exits 0" 0 "$RUN_STATUS"
-missing "the snapshots are purged" "$(snap_root box1)"
+missing "the snapshot records are purged" "$(snap_root box1)"
+contains "purging keeps the image another container runs from" "runs from it" "$RUN_OUT"
+exists "the shared snapshot image survives the purge" \
+  "$FAKE_ENGINE_STATE/images/agent-workspace_snapshot-box1_$SNAP"
 
 run remove ghost --yes
 is "removing an unmanaged container fails" 1 "$RUN_STATUS"

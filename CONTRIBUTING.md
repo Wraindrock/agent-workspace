@@ -69,6 +69,27 @@ that no longer parses - fails in CI before any build.
 default tag and base image. The Justfile, the Containerfile and both workflows
 read it. If you need a new parameter there, plumb it through all four.
 
+## Third-party patches
+
+This image is built from upstream components - base packages, npm packages, agent
+CLIs - and any of them can change under us. When we need behaviour upstream does not
+have yet, stay honest about it:
+
+- **Configuration before patches.** Anything the upstream tool accepts as a config
+  file, an environment variable or a flag belongs in `system_files/`, `config/` or
+  the installer - not in a patch.
+- **Pin first, then patch.** Pin the version (`config/*.conf`, `image.env`) and keep
+  the patch in a build module. A patch script must assert that the exact text it
+  replaces is present exactly once, and fail the build when it is not, so an upstream
+  release breaks the build instead of silently shipping a half-patched image.
+- **Never rewrite an installed tool at runtime.** First boot may *seed* a user's
+  configuration idempotently; it must not modify the tool that reads it.
+- **Write down why.** Every patch carries a comment naming the upstream issue or
+  behaviour it works around, and the module table in `docs/modules.md` mentions it.
+  When upstream fixes it, delete the patch in the same change that bumps the pin.
+- **Prefer upstream.** A patch that survives more than a release or two should be a
+  pull request against the upstream project, not a permanent local fork.
+
 ## Pull requests
 
 - Keep one concern per pull request; a module move plus a CI rewrite is two.

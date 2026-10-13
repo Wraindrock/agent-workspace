@@ -101,16 +101,64 @@ snapshot_prune() {
   excess="$(printf '%s\n' "$ids" | head -n "$((total - keep))")"
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    snapshot_delete "$name" "$id"
+    # a kept snapshot reports why and returns non-zero; pruning the rest must
+    # continue (and must not trip errexit in the caller)
+    snapshot_delete "$name" "$id" || true
   done <<<"$excess"
 }
 
+# image_in_use IMAGE prints the first container that runs from IMAGE, or nothing
+# when no container does. Snapshot images are shared: a fork or a rebuild keeps
+# running from the very image another container's snapshot points at, so neither
+# pruning nor remove may pull that image out from under it.
+image_in_use() {
+  local image="${1}" name=""
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ "$(state_get "$name" RUN_IMAGE)" == "$image" ]]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done < <(state_list)
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    if [[ "$(eng_container_image "$name" 2>/dev/null || true)" == "$image" ]]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done < <(eng_labeled_containers 2>/dev/null || true)
+  return 1
+}
+
+# snapshot_delete NAME ID [force]
+#
+# Drops a snapshot record and the image it was committed to. An image a
+# container still runs from is never deleted: pruning reports it and keeps the
+# whole snapshot, because the image is the only handle the record has. force=1
+# (install.sh remove --purge-snapshots) drops the record anyway, but still
+# leaves the in-use image for the engine's own image prune.
 snapshot_delete() {
-  local name="${1}" id="${2}" image dir
+  local name="${1}" id="${2}" force="${3:-0}" image="" dir="" holder=""
   image="$(snapshot_image "$name" "$id")"
   dir="$(snapshot_path "$name" "$id")"
   if eng_image_exists "$image"; then
-    run_engine rmi --force "$image" >/dev/null 2>&1 || true
+    holder="$(image_in_use "$image")" || holder=""
+  fi
+  if [[ -n "$holder" ]]; then
+    if [[ "$force" -eq 1 ]]; then
+      warn "keeping image ${image}: container ${holder} runs from it (remove that container, then prune images)"
+      rm -rf "${dir}"
+      return 0
+    fi
+    warn "snapshot ${id} of ${name} is still used by ${holder}; keeping it and its image ${image}"
+    return 1
+  fi
+  if eng_image_exists "$image"; then
+    if ! run_engine rmi "$image" >/dev/null 2>&1; then
+      warn "image ${image} could not be removed (it may still be in use); keeping snapshot ${id}"
+      return 1
+    fi
   fi
   rm -rf "${dir}"
+  return 0
 }

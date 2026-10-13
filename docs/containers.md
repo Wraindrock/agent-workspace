@@ -114,6 +114,7 @@ Every TUI action has a subcommand:
 ./install.sh snapshot dsh-box --label before-refactor --keep 10
 ./install.sh snapshots dsh-box
 ./install.sh rollback dsh-box --to 20260113T090000Z
+./install.sh rollback dsh-box --skip-safety                 # keep no pre-rollback snapshot
 ./install.sh recover dsh-box
 ./install.sh web dsh-box                                             # open the agent's web UI
 ./install.sh fork dsh-box dsh-fork --agent opencode
@@ -186,5 +187,6 @@ which containers are theirs.
 `install.sh doctor` checks the engine, the recorded containers and their volumes, the
 default image, the credential files (they must be mode `600`) and the snapshot
 archives (they must be readable tarballs), and for containers created with a web UI,
-that the host port is still published. `--strict` exits non-zero when anything is
+that the host port is still published. It never changes anything; it is the check to
+run before you need a rollback. `--strict` exits non-zero when anything is
 wrong, which is what the test suite uses.

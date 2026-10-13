@@ -29,6 +29,17 @@ container_state() { cat "$(container_dir "$1")/state" 2>/dev/null || printf 'gon
 has_volume() { [[ -d "$(volume_dir "$1")" ]]; }
 has_image() { [[ -f "$(image_file "$1")" ]]; }
 
+# like a real engine, an image a container was created from is still "in use"
+image_in_use() {
+  local ref="$1" sdir
+  for sdir in "$STATE"/containers/*/state; do
+    [[ -f "$sdir" ]] || continue
+    [[ "$(cat "$sdir")" == "gone" ]] && continue
+    [[ "$(cat "$(dirname "$sdir")/image" 2>/dev/null)" == "$ref" ]] && return 0
+  done
+  return 1
+}
+
 # host_dir_for TARGET prints the host directory mounted at TARGET
 host_dir_for() {
   local target="$1" entry
@@ -77,10 +88,25 @@ case "$cmd" in
     exit 0
     ;;
   ps)
+    filter=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --filter) filter="$2"; shift 2 ;;
+        --format|--all) shift ;;
+        --format=*) shift ;;
+        *) shift ;;
+      esac
+    done
+    # only label filters matter to install.sh: label=<key>=<value>
+    filter="${filter#label=}"
     for dir in "$STATE"/containers/*/state; do
       [[ -f "$dir" ]] || continue
       [[ "$(cat "$dir")" == "gone" ]] && continue
-      basename "$(dirname "$dir")"
+      cname="$(basename "$(dirname "$dir")")"
+      if [[ -n "$filter" ]]; then
+        grep -qxF "$filter" "$(dirname "$dir")/labels" 2>/dev/null || continue
+      fi
+      printf '%s\n' "$cname"
     done
     exit 0
     ;;
@@ -113,6 +139,7 @@ case "$cmd" in
     name=""; entrypoint=""; rm_flag=0; interactive=0; image=""; env_file=""; publish=""
     FAKE_MOUNTS=""
     command_args=()
+    labels=()
     while [[ "$#" -gt 0 ]]; do
       case "$1" in
         --name) name="$2"; shift 2 ;;
@@ -137,7 +164,8 @@ case "$cmd" in
         --detach|-d|--privileged) shift ;;
         --publish|-p) publish="$2"; shift 2 ;;
         --env-file) env_file="$2"; shift 2 ;;
-        --label|--env|--hostname|--workdir|--restart|--systemd|--cgroupns|--tmpfs) shift 2 ;;
+        --label) labels+=("$2"); shift 2 ;;
+        --env|--hostname|--workdir|--restart|--systemd|--cgroupns|--tmpfs) shift 2 ;;
         -*) shift ;;
         *)
           # the first bare argument is the image; everything after it is the command
@@ -159,7 +187,12 @@ case "$cmd" in
               data="$(host_dir_for /data || true)"
               [[ -n "$target" ]] || { printf 'no backup mount\n' >&2; exit 1; }
               [[ -n "$data" ]] || { printf 'no data mount\n' >&2; exit 1; }
-              tar czf "${target}/home.tar.gz" -C "$data" .
+              if [[ "${FAKE_ENGINE_BAD_ARCHIVE:-0}" == "1" ]]; then
+                # a write that "succeeds" but leaves an unreadable archive
+                printf 'not a tarball\n' >"${target}/home.tar.gz"
+              else
+                tar czf "${target}/home.tar.gz" -C "$data" .
+              fi
               exit 0
               ;;
             xzf*)
@@ -198,6 +231,8 @@ case "$cmd" in
     printf '%s\n' "${image:-unknown}" >"${dir}/image"
     # remember the credentials the container was started with
     if [[ -n "${env_file:-}" && -f "$env_file" ]]; then cp "$env_file" "${dir}/env"; fi
+    # remember labels so "ps --filter label=..." behaves like the real engine
+    if [[ "${#labels[@]}" -gt 0 ]]; then printf '%s\n' "${labels[@]}" >"${dir}/labels"; fi
     # remember published ports so "port" can resolve them like a real engine
     if [[ -n "$publish" ]]; then printf '%s\n' "$publish" >"${dir}/publish"; fi
     printf '%s\n' "$name"
@@ -218,7 +253,23 @@ case "$cmd" in
     exit 0
     ;;
   rmi)
-    for arg in "$@"; do [[ "$arg" == -* ]] || rm -f "$(image_file "$arg")"; done
+    force=0
+    refs=()
+    for arg in "$@"; do
+      case "$arg" in
+        --force|-f) force=1 ;;
+        -*) ;;
+        *) refs+=("$arg") ;;
+      esac
+    done
+    for ref in "${refs[@]:-}"; do
+      [[ -n "$ref" ]] || continue
+      if [[ "$force" -eq 0 ]] && image_in_use "$ref"; then
+        printf 'Error: image %s is in use by a container\n' "$ref" >&2
+        exit 1
+      fi
+      rm -f "$(image_file "$ref")"
+    done
     exit 0
     ;;
   rm)

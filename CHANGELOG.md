@@ -27,6 +27,13 @@ it as isolated agent containers.
   a container that went missing; `fork` copies a container into a second one;
   `upgrade` takes a `pre-upgrade` snapshot before it pulls a new image. Retention
   defaults to the latest five snapshots (`--keep`, `SNAPSHOT_KEEP`).
+- Safety before destruction: `rollback` verifies that the snapshot's home archive
+  can be read before it changes anything, refuses to continue when it cannot, and
+  snapshots the container it replaces first (label `pre-rollback`, `--skip-safety` to
+  turn that off). `snapshot` deletes a home archive it cannot read back, keeping the
+  filesystem snapshot. Retention and `remove --purge-snapshots` keep any snapshot
+  whose image a container still runs from - including containers this installer does
+  not manage - and report which container it was, instead of force-removing it.
 - Per-container credential files at
   `~/.config/agent-workspace/containers/<name>.env` (mode 600, passed to the
   engine with `--env-file`) and per-container host state under
