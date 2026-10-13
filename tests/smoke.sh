@@ -74,6 +74,33 @@ for unit in /etc/systemd/system/agent-workspace-firstboot.service \
   fi
 done
 
+# The ostree symlinks /opt, /usr/local and /root have to resolve in the image:
+# installers write through them during the build, and a dangling /opt made
+# `pipx ensurepath --global` fail on every build (and the opt-in aider recipe
+# abort the build outright).
+for dir in /opt /usr/local /root; do
+  if in_image /usr/bin/test -e "$dir"; then
+    pass "${dir} resolves"
+  else
+    fail "${dir} is a dangling symlink"
+  fi
+done
+
+if in_image /bin/bash -c 'python3 -m pipx ensurepath --global' >/dev/null 2>&1; then
+  pass "pipx ensurepath --global"
+else
+  fail "pipx ensurepath --global"
+fi
+
+# npm installs during the build keep their debug logs next to the npm cache,
+# which 90-cleanup removes. Logs left in root's home would ship in the image and
+# show up as a `bootc container lint` warning.
+if in_image /bin/bash -c '[[ ! -e /var/roothome/.npm/_logs ]]'; then
+  pass "no npm debug logs in root's home"
+else
+  fail "npm left debug logs in root's home"
+fi
+
 echo
 if [[ "$failures" -eq 0 ]]; then
   echo "smoke: all checks passed"

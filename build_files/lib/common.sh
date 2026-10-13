@@ -122,19 +122,29 @@ retry() {
   done
 }
 
+# Every npm invocation in a module - including the queries the helpers make,
+# such as `npm config get prefix` - has to keep its cache and debug logs next to
+# the cache that 90-cleanup removes. Left to its defaults npm writes them to
+# $HOME/.npm, which lands in /var/roothome and ships in the image, where `bootc
+# container lint` flags it as undeclared /var content.
+export NPM_CONFIG_CACHE="${NPM_CACHE:-/var/cache/agent-workspace/npm}"
+export NPM_CONFIG_LOGS_DIR="${NPM_CONFIG_CACHE}/_logs"
+
 # npm_install_global installs one or more npm packages into the image-wide
-# prefix so every user on the system can run them. Both the prefix and the
-# cache are set explicitly: their defaults (/usr/local and $HOME/.npm) are
-# symlinks into /var on an ostree base image.
+# prefix so every user on the system can run them. Both the prefix and the cache
+# are set explicitly: their defaults (/usr/local and $HOME/.npm) are symlinks
+# into /var on an ostree base image. The flags repeat what NPM_CONFIG_* above
+# already enforces, so the intent is visible at the call site too.
 npm_install_global() {
   require_command npm
   local prefix cache
   prefix="$(npm config get prefix 2>/dev/null || true)"
   [[ -n "${prefix}" ]] || prefix=/usr/local
-  cache="${NPM_CACHE:-/var/cache/agent-workspace/npm}"
-  install -d -m 0755 "${prefix}/bin" "${prefix}/lib" "${cache}" 2>/dev/null || true
+  cache="${NPM_CONFIG_CACHE}"
+  install -d -m 0755 "${prefix}/bin" "${prefix}/lib" "${cache}" "${NPM_CONFIG_LOGS_DIR}" 2>/dev/null || true
   log "npm install -g: $*"
-  retry 3 npm install --global --no-fund --no-audit --loglevel=error --cache "${cache}" "$@"
+  retry 3 npm install --global --no-fund --no-audit --loglevel=error \
+    --cache "${cache}" --logs-dir "${NPM_CONFIG_LOGS_DIR}" "$@"
 }
 
 # pipx_install installs a Python application into /opt/pipx, exposed to all users.

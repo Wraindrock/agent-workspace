@@ -29,7 +29,7 @@ is a supported but secondary path; everything below assumes the container.
 | --- | --- | --- |
 | `build_files/` | the module pipeline and its libraries | no (only the manifest it produces) |
 | `config/` | the declarative switches | no (values are recorded in the manifest) |
-| `runtime/` | the in-image CLI and first-boot script | yes, via the runtime module |
+| `runtime/` | the in-image CLI and first-boot script | yes, copied by the `install_runtime` pipeline step |
 | `system_files/` | verbatim overlay copied to `/` | yes |
 
 Keeping the build inputs in a separate stage means the image never ships its own
@@ -50,6 +50,7 @@ install_runtime               # runtime/lib -> /usr/lib/agent-workspace
                               # runtime/bin -> /usr/bin
 run_modules                   # build_files/modules/*/ in filename order
 summarize
+verify_layout                 # /opt, /usr/local and /root must not be dangling
 ~~~
 
 Each module is a directory with two files:
@@ -57,7 +58,7 @@ Each module is a directory with two files:
 ```text
 build_files/modules/20-container-tools/
   module.env    MODULE_NAME, MODULE_DESCRIPTION, MODULE_ENABLED_DEFAULT
-  install.sh    install_module() { ... }
+  install.sh    executable; run with MODULE_NAME/MODULE_DIR exported
 ```
 
 ### 3. How a module decides whether to run
@@ -81,7 +82,7 @@ another.
 
 | Path | Contents |
 | --- | --- |
-| `/usr/share/agent-workspace/manifest.json` | JSON: image, version, base image, Fedora release, modules with descriptions, the installed agents with their binaries, titles and credential variables (`agentBinaries`, `agentCatalog`), toolchain versions, build timestamp |
+| `/usr/share/agent-workspace/manifest.json` | JSON: image, version, base image, Fedora release, the module names, the installed agents with their binaries, titles and credential variables (`agentBinaries`, `agentCatalog`), toolchain versions, build timestamp |
 | `/usr/share/agent-workspace/modules.txt` | newline-separated module names, for tools that do not want JSON |
 
 `/etc/agent-workspace/build.env` carries the same identity as shell variables, so
@@ -202,18 +203,18 @@ dispatches, and one library per concern does the work.
 
 | Library | Role |
 | --- | --- |
-| `installer/lib/ui.sh` | the gum TUI, with a plain-`read` fallback when gum is missing or there is no terminal |
+| `installer/lib/ui.sh` | the gum TUI (the menu needs gum and a terminal); individual prompts fall back to plain `read` when gum is missing |
 | `installer/lib/engine.sh` | podman/docker detection, the per-engine run flags, and a dry-run mode that prints commands instead of running them |
 | `installer/lib/state.sh` | where host state lives: `meta`, snapshots, and credential files |
 | `installer/lib/agents.sh` | the agent catalog, read from the image manifest and merged over the built-in table |
-| `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `enter`, `logs`, `snapshot`, `rollback`, `recover`, `fork`, `upgrade`, `web`, `remove`, `doctor` |
+| `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `restart`, `enter`, `shell`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`, `upgrade`, `web`, `remove`, `doctor` |
 
 | Decision | Made by |
 | --- | --- |
 | which engine | `--engine podman|docker`, otherwise podman if both are present |
 | which image | `--image` (default taken from `image.env`) |
 | how many containers, and their names | the TUI, `--name`, `--count`, or a declaration file |
-| which agent each container runs | the agent catalog in the image manifest, falling back to the built-in `dsh` and `opencode` table |
+| which agent each container runs | the built-in `dsh` and `opencode` table, with the agent catalog from the image manifest merged over it |
 | persistent or ephemeral | `--mode persistent|ephemeral` |
 | credentials | a `0600` env file per container under `~/.config/agent-workspace/containers/` |
 | host state | `~/.local/share/agent-workspace/` (per-container `meta` plus snapshot archives) |

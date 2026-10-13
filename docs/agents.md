@@ -55,8 +55,8 @@ commands if a recipe ships more than one.
 
 The build also publishes `agentCatalog`: one entry per installed agent with its
 binaries, its title and its credential variable. The host installer
-(`install.sh`) reads that to build its menu, so the menu can only offer agents
-the image really contains.
+(`install.sh`) starts its menu from the built-in `dsh` and `opencode` entries and
+merges the image's `agentCatalog` over them.
 
 ### Recipes that install from elsewhere
 
@@ -89,6 +89,12 @@ Rules of thumb:
 | Codex CLI | `codex.sh` | `codex` | `OPENAI_API_KEY` | npm `@openai/codex` | no |
 | Gemini CLI | `gemini-cli.sh` | `gemini` | `GEMINI_API_KEY` | npm `@google/gemini-cli` | no |
 | Aider | `aider.sh` | `aider` | `OPENAI_API_KEY` | pipx `aider-chat` | no |
+
+Aider is listed for completeness only. `aider-chat` requires `scipy`, whose
+release has no wheel for the base image's Python 3.14 and whose source build
+fails without a Fortran toolchain, so `pipx_install aider-chat` aborts the build
+instead of leaving a half-installed agent behind. It stays out of the default
+image until that wheel exists.
 
 `agent-workspace agents` lists what the running image actually has, cross-checked
 against the manifest:

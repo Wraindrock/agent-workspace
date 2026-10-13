@@ -12,12 +12,14 @@ install -d -m 0755 /usr/lib/agent-workspace
 install -d -m 0755 /etc/agent-workspace
 install -d -m 0755 /var/lib/agent-workspace
 
-# On ostree/bootc images /usr/local points at /var/usrlocal and /root points
-# at /var/roothome. Neither target exists inside a build container, so
-# anything writing to /usr/local/bin or to $HOME (npm --global, pipx, curl
-# installers) dies with `ENOTDIR: not a directory, mkdir ...`. Materialise
-# both targets before any other module runs.
-for dir_mode in "/usr/local:0755" "/root:0700"; do
+# On ostree/bootc images /opt points at /var/opt, /usr/local at /var/usrlocal
+# and /root at /var/roothome. None of those targets exists inside a build
+# container, so anything writing through them (npm --global, pipx, curl
+# installers) dies: `install -d /opt/pipx` reports "cannot create directory
+# '/opt': File exists", and pipx's global home fails with
+# `FileNotFoundError: [Errno 2] No such file or directory: '/opt/pipx/logs'`.
+# Materialise all three targets before any other module runs.
+for dir_mode in "/opt:0755" "/usr/local:0755" "/root:0700"; do
   dir="${dir_mode%%:*}"
   mode="${dir_mode##*:}"
   if [[ -L "${dir}" ]]; then

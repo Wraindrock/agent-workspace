@@ -8,6 +8,12 @@ rm -rf /var/cache/dnf /var/cache/libdnf5 /var/cache/PackageKit /var/cache/agent-
 find /var/log -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
 rm -rf /var/tmp/* 2>/dev/null || true
+# dnf5 keeps transaction state in /run/dnf, and /run must be empty in the image:
+# `bootc container lint` flags it as nonempty-run-tmp otherwise.
+rm -rf /run/dnf
+# pipx logs every command and keeps a cache beside it. Both are build artifacts
+# of the image-wide pipx home (/opt/pipx -> /var/opt/pipx) and must not ship.
+rm -rf /var/opt/pipx/logs /var/opt/pipx/.cache
 
 # The build state under ${STATE_DIR} is removed by build_files/build.sh after
 # it prints the build summary, so the summary can still report what was applied.

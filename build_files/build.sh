@@ -131,6 +131,19 @@ summarize() {
   fi
 }
 
+# verify_layout fails the build when a top-level directory the image writes
+# through is left dangling. 00-preflight materialises the targets of the
+# ostree symlinks (/opt -> /var/opt, /usr/local -> /var/usrlocal,
+# /root -> /var/roothome); a module that undoes that, or a base image that adds
+# a new one, would otherwise ship an image whose installers write nowhere.
+verify_layout() {
+  local dir
+  for dir in /opt /usr/local /root; do
+    [[ -e "${dir}" ]] || die "${dir} is a dangling symlink in the built image"
+  done
+  ok "layout: /opt, /usr/local and /root resolve"
+}
+
 main() {
   require_root
   require_command dnf5
@@ -139,6 +152,7 @@ main() {
   install_runtime
   run_modules
   summarize
+  verify_layout
   # /run is throwaway, but removing the state keeps the contract explicit:
   # nothing in the image may depend on build-time state.
   rm -rf "${STATE_DIR}"
