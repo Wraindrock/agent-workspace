@@ -36,17 +36,40 @@ agent-workspace doctor       # is the running system what the image promised?
 agent-workspace rollback     # undo, atomically, whenever you want
 ~~~
 
-### As a plain container
+### As an isolated agent sandbox
 
-The same image runs as a normal container when you just want the toolchain:
+This is a **complete operating system**, not a slim app image: Fedora bootc with
+its own PID 1, systemd, users, package database and SELinux policy. Run it under
+podman and every agent gets a whole OS of its own - an `npm install -g`, a
+`dnf install`, a stray `rm -rf` or a broken config stays inside that container:
 
 ~~~bash
+# one agent, one OS, your code mounted at /workspace
+podman run --rm -it \
+  -v "$PWD:/workspace:z" --workdir /workspace \
+  ghcr.io/wraindrock/agent-workspace:latest claude
+
+# the image ships several harnesses; pick any of them
+podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
+  ghcr.io/wraindrock/agent-workspace:latest codex
+
+# drop the mount and the agent gets a fully disposable filesystem
 podman run --rm -it --entrypoint /bin/bash \
   ghcr.io/wraindrock/agent-workspace:latest
+~~~
 
-# or drop into an agent workspace with your code mounted
-podman run --rm -it -v "$PWD:/workspace:z" \
-  --entrypoint /bin/bash ghcr.io/wraindrock/agent-workspace:latest
+Run **rootless** (`podman`, not `sudo podman`): container root is then your own
+user on the host, so everything the agent writes into `/workspace` belongs to
+you. On a booted system the image additionally creates the unprivileged `agent`
+user on first boot.
+
+Want systemd and the full OS running in the sandbox? Leave the default entrypoint
+and exec into it:
+
+~~~bash
+podman run -d --name agent-box -v "$PWD:/workspace:z" \
+  ghcr.io/wraindrock/agent-workspace:latest
+podman exec -it agent-box /bin/bash
 ~~~
 
 Lifecycle commands (`switch`, `rollback`, `update`, `pin`) detect that they are

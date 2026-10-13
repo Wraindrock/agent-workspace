@@ -32,13 +32,38 @@ agent-workspace doctor       # 运行中的系统是否兑现了镜像的承诺
 agent-workspace rollback     # 随时原子回滚
 ~~~
 
-### 当作普通容器运行
+### 当作隔离 agent 的系统容器运行
 
-只想用工具链时，同一个镜像可以直接跑容器：
+这是一套**完整的操作系统**，不是精简的应用镜像：Fedora bootc，有自己的 PID 1、
+systemd、用户、软件包数据库和 SELinux 策略。用 podman 跑起来，每个 agent 都独占
+一整个操作系统——一次 `npm install -g`、一次 `dnf install`、一个误删的目录或一份
+写坏的配置，都留在那个容器里：
 
 ~~~bash
+# 一个 agent 独占一套系统，代码挂载到 /workspace
+podman run --rm -it \
+  -v "$PWD:/workspace:z" --workdir /workspace \
+  ghcr.io/wraindrock/agent-workspace:latest claude
+
+# 镜像内置多个 harness，换一个名字即可
+podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
+  ghcr.io/wraindrock/agent-workspace:latest codex
+
+# 不挂载目录，agent 就在一次性的文件系统里工作
 podman run --rm -it --entrypoint /bin/bash \
   ghcr.io/wraindrock/agent-workspace:latest
+~~~
+
+请用 **rootless** 方式运行（`podman`，而不是 `sudo podman`）：此时容器里的 root 就是
+你在主机上的用户，agent 写入 `/workspace` 的文件归属你本人。在已启动的裸机/虚拟机
+上，镜像还会在首次开机时创建非特权用户 `agent`。
+
+想让 systemd 与完整系统在沙箱里跑起来？保留默认入口点，然后 exec 进去：
+
+~~~bash
+podman run -d --name agent-box -v "$PWD:/workspace:z" \
+  ghcr.io/wraindrock/agent-workspace:latest
+podman exec -it agent-box /bin/bash
 ~~~
 
 生命周期命令（`switch` / `rollback` / `update` / `pin`）会检测到自己处在容器里并
