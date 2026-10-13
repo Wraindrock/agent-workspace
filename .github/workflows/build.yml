@@ -29,6 +29,9 @@ concurrency:
 
 env:
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  # cosign (a go-containerregistry client) reads the Docker config, while podman
+  # writes its own containers/auth.json - so log in to both below.
+  DOCKER_CONFIG: ${{ runner.temp }}/docker-config
 
 jobs:
   build:
@@ -110,8 +113,13 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
+          mkdir -p "${DOCKER_CONFIG}"
+          registry_host="${{ steps.meta.outputs.registry_host }}"
           printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
-            podman login "${{ steps.meta.outputs.registry_host }}" -u "${{ github.actor }}" --password-stdin
+            podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
+            podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin \
+              --authfile "${DOCKER_CONFIG}/config.json"
 
       - name: Preserve the currently published image as :previous
         if: github.event_name != 'pull_request'
@@ -188,3 +196,20 @@ jobs:
             # keyless: the workflow's OIDC identity is the verification anchor
             cosign sign --yes "${digest}"
           fi
+
+      - name: Verify the published signature
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${SIGNING_SECRET}" ]]; then
+            echo "key-signed image: verify it with the matching public key (see scripts/cosign-keygen.sh)"
+            exit 0
+          fi
+          cosign verify \
+            --certificate-identity-regexp "^${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${IMAGE}:${TAG}"
