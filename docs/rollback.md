@@ -1,102 +1,105 @@
-# Rollback and lifecycle
+# Snapshots, rollback, recover and fork
 
-agent-workspace inherits its safety story from bootc: **the operating system is an
-image, every update is a new deployment, and the previous deployment is never
-deleted to make room.**
+A container created by `install.sh` is a whole operating system with the agent's
+state inside it. The installer can therefore treat it the way you would treat a
+virtual machine: commit it, come back to it, rebuild it, or branch a new one off it.
+Nothing here touches the host's own bootc/ostree deployments - the unit of rollback
+is the container.
 
-## Deployments, not upgrades
+## What a snapshot contains
 
-```text
-bootc status
-  booted    ghcr.io/wraindrock/agent-workspace:latest   (deployment A)
-  staged    ghcr.io/wraindrock/agent-workspace:latest   (deployment B, new digest)
-  rollback  deployment A
-```
+`./install.sh snapshot dsh-box` does two things:
 
-An update is downloaded, laid out as a new deployment, and only becomes active
-after a reboot. Nothing on the running system is mutated while it runs, so a
-half-finished update cannot leave you with a machine that is neither version.
+1. commits the container's filesystem to a local image
+   `agent-workspace/snapshot-<name>:<id>`, and
+2. archives the container's home volume to
+   `${XDG_DATA_HOME:-$HOME/.local/share}/agent-workspace/snapshots/<name>/<id>/home.tar.gz`.
 
-## The commands
+The id is a UTC timestamp (`20260113T090000Z`), and each snapshot directory carries a
+`meta` file with the container, agent, mode, workspace, image and label it was taken
+with. The newest `5` snapshots are kept by default (`--keep N` or `SNAPSHOT_KEEP`).
 
-| Command | What it does | Needs |
-| --- | --- | --- |
-| `agent-workspace status` | booted / staged / rollback deployments, pin state | bootc |
-| `agent-workspace update` | stage the newest build of the current tag | root, bootc |
-| `agent-workspace switch <tag>` | stage a different tag (`20261013`, `previous`, ...) | root, bootc |
-| `agent-workspace rollback` | stage the previously booted deployment | root, bootc |
-| `agent-workspace pin` | freeze this machine to the booted digest | root, bootc, jq |
-| `agent-workspace pin --clear` | unfreeze | root |
-
-All of them are also exposed on the host as `scripts/*.sh`, in case the image CLI
-is unavailable (rescue environments, plain containers).
-
-## Rollback drill
-
-Run this once on a new machine, before you need it:
+Labels are recorded for you: `manual` for snapshots you take, `pre-upgrade` for the
+snapshot `upgrade` takes automatically, and `fork-source` for the one `fork` takes
+before branching.
 
 ~~~bash
-agent-workspace status          # note the booted digest
-agent-workspace update          # stage something new
-sudo systemctl reboot
-agent-workspace status          # confirm the new deployment is booted
-agent-workspace rollback        # stage the old one
-sudo systemctl reboot
-agent-workspace status          # you are back; nothing was lost
-```
+./install.sh snapshot dsh-box --label before-refactor
+./install.sh snapshots dsh-box
+~~~
 
-`rollback` is not a destructive "reset": it re-points the bootloader at the
-previous deployment and marks the current one as the rollback target. Running it
-again rolls *forward* to the deployment you just left.
+## Rollback
 
-## Pinning a machine
-
-A tag like `latest` moves. For machines where "moves" is a hazard - a lab box
-running a long evaluation, a demo machine - pin the digest:
+`rollback` replaces the container with a snapshot: it stops and removes the current
+container, restores the home volume from the snapshot's archive, and starts a new
+container from the snapshot image with the same name, agent, mode and workspace.
 
 ~~~bash
-agent-workspace pin            # writes /etc/agent-workspace/pinned-digest
-agent-workspace update         # now targets that digest, not the moving tag
-agent-workspace pin --clear    # rejoin the moving tag
-```
+./install.sh rollback dsh-box                  # the latest snapshot
+./install.sh rollback dsh-box --to 20260113T090000Z
+~~~
 
-```text
-image   : ghcr.io/wraindrock/agent-workspace:latest
-pinned  : sha256:9f2c...ab41
-```
+The snapshot image must still be in the local engine store - these images are local
+by design and are never pushed to a registry. If it is gone, the installer stops and
+tells you; the home archive alone cannot rebuild the filesystem.
 
-While a pin exists, `agent-workspace switch` refuses to run (unless you pass
-`--ignore-pin`) rather than silently violating the pin.
+## Recover
 
-## Tags published by CI
+`recover` is the answer to "something happened to my container". It picks the right
+response by itself:
 
-| Tag | Meaning | Use |
-| --- | --- | --- |
-| `latest` | newest build of the default branch | fleets that want updates |
-| `previous` | whatever `:latest` pointed at before this release | one-tag fleet rollback |
-| `YYYYMMDD` | daily build | reproducible installs |
-| `YYYYMMDD-<sha>` | that day's build of a specific commit | forensics, bisecting |
-
-Daily rebuilds exist because the base image moves: the same commit built next week
-picks up Fedora security fixes.
-
-## When something goes wrong
-
-| Symptom | Action |
+| Situation | What `recover` does |
 | --- | --- |
-| New deployment misbehaves | `agent-workspace rollback` + reboot |
-| Machine will not boot | pick the previous deployment in the bootloader menu (bootc keeps it as an entry) |
-| Fleet-wide bad release | move the fleet to `:previous`, then pin while you investigate |
-| Agent binary missing after update | `agent-workspace doctor --strict`; a module was turned off in `config/modules.conf` |
-| Need to inspect an old build | `podman run --rm -it --entrypoint /bin/bash <tag>` |
+| the container is running | nothing - it says so and exits |
+| the container exists but is stopped | starts it again |
+| the container is gone and a snapshot exists | restores the latest snapshot (volume included) |
+| the container is gone and there is no snapshot | rebuilds it from the recorded image, keeping the home volume |
 
-## What rollback does *not* cover
+~~~bash
+./install.sh recover dsh-box
+~~~
 
-- **Your data.** `/var` and `/home` are untouched by deployments, so a rollback
-  does not undo a data migration. Version your data formats and migrations in the
-  workload, not in the image.
-- **`/etc/` overrides.** bootc merges `/etc` three ways; a hand edit survives
-  updates by design, which also means it is not rolled back. Keep machine
-  configuration in `/etc/agent-workspace/config.env` so it stays visible.
-- **Container images pulled at runtime.** `podman` state in `/var/lib/containers`
-  is not part of a deployment.
+## Fork
+
+`fork` creates a second container from the state of the first one, with its own home
+volume and its own credentials file:
+
+~~~bash
+./install.sh fork dsh-box dsh-experiment
+./install.sh fork dsh-box dsh-old --from 20260113T090000Z   # from a specific snapshot
+./install.sh fork dsh-box dsh-live --live                   # copy the live volume, no snapshot
+./install.sh fork dsh-box dsh-alt --agent opencode --workspace ~/work/alt
+~~~
+
+By default the source is snapshotted first (`fork-source`), and the new container's
+home is unpacked from that archive; `--live` copies the running volume instead. The
+new container records `FORKED_FROM` and `FORKED_AT` in its metadata. Credentials are
+copied so the fork is immediately usable, with a warning to review the new file.
+
+## Upgrade
+
+`upgrade` moves a container to a newer image while keeping its identity:
+
+~~~bash
+./install.sh upgrade dsh-box --image ghcr.io/wraindrock/agent-workspace:latest
+~~~
+
+It takes a `pre-upgrade` snapshot first, then recreates the container from the new
+image with the same name, agent, mode and workspace, and reuses the home volume. If
+the new image misbehaves:
+
+~~~bash
+./install.sh rollback dsh-box --to <the pre-upgrade id>
+~~~
+
+## What snapshots do not cover
+
+- **The host workspace.** `/workspace` is a bind mount of a directory on your host;
+  it is your data, and it is not part of a snapshot. Version it with git.
+- **Credentials.** They stay in `~/.config/agent-workspace/containers/<name>.env` and
+  are deliberately kept out of the container filesystem and out of snapshots.
+- **Other hosts.** Snapshots are local images plus a local archive. To move a
+  container elsewhere, `snapshot`, then save the image and the archive and load them
+  on the other machine - or rebuild the container from the declaration file.
+- **Your host system.** Nothing in this project updates, pins or rolls back the OS
+  you are running the containers on. That is your distribution's job.

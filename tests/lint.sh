@@ -18,8 +18,10 @@ shell_files=()
 while IFS= read -r file; do shell_files+=("$file"); done < <(
   find . -path ./.git -prune -o -type f -name '*.sh' -print | sort
 )
-# the runtime CLI is a bash script without the .sh suffix
-[[ -f runtime/bin/agent-workspace ]] && shell_files+=(runtime/bin/agent-workspace)
+# bash scripts without the .sh suffix
+for suffixless in runtime/bin/agent-workspace install.sh; do
+  [[ -f "$suffixless" ]] && shell_files+=("$suffixless")
+done
 
 echo "shell syntax"
 for file in "${shell_files[@]}"; do
@@ -172,11 +174,41 @@ else
 fi
 
 echo "required files"
-for required in Containerfile Justfile install.sh image.env LICENSE README.md docs/architecture.md docs/rollback.md docs/containers.md; do
+for required in Containerfile Justfile install.sh image.env LICENSE README.md \
+  docs/architecture.md docs/rollback.md docs/containers.md \
+  installer/lib/engine.sh installer/lib/state.sh installer/lib/ui.sh \
+  installer/lib/agents.sh installer/lib/commands.sh \
+  tests/install.sh tests/fixtures/fake-engine.sh; do
   if [[ -e "$required" ]]; then
     pass "$required"
   else
     fail "$required missing"
+  fi
+done
+
+echo "installer structure"
+for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor"; do
+  if grep -qE "^${symbol}\(\) \{" installer/lib/commands.sh; then
+    pass "installer/lib/commands.sh defines ${symbol}"
+  else
+    fail "installer/lib/commands.sh does not define ${symbol}"
+  fi
+done
+for symbol in "run_engine" "engine_run_flags" "detect_engines" "resolve_engine"; do
+  if grep -qE "^${symbol}\(\) \{" installer/lib/engine.sh; then
+    pass "installer/lib/engine.sh defines ${symbol}"
+  else
+    fail "installer/lib/engine.sh does not define ${symbol}"
+  fi
+done
+# install.sh is the single supported entry point; the bootc disk images and the
+# host-side lifecycle helpers were removed with the container-only redesign.
+for gone in disk_config .github/workflows/build-disk.yml scripts/switch.sh \
+  scripts/rollback.sh scripts/doctor.sh runtime/lib/cmd-lifecycle.sh; do
+  if [[ -e "$gone" ]]; then
+    fail "${gone} should have been removed by the container-only redesign"
+  else
+    pass "${gone} is gone"
   fi
 done
 

@@ -1,768 +1,629 @@
 #!/usr/bin/env bash
-# agent-workspace installer -- create and manage agent sandbox containers.
+# ---------------------------------------------------------------------------
+# agent-workspace installer.
 #
-# The image ships the agents; this script only decides how many containers
-# exist, what they are called, which agent each one starts, and how they get
-# their credentials. Nothing here rebuilds the image.
+# One command, one way to use this project: on a Linux host, run ./install.sh
+# and the TUI creates containers in podman or docker. Each container is a
+# complete Linux system built from this repository's image, preconfigured for
+# one agent (DSH, OpenCode, ...), and managed so that it can be snapshotted,
+# rolled back, recovered and forked.
 #
-#   ./install.sh                            interactive wizard
-#   ./install.sh --file containers.conf     declarative, non-interactive
-#   ./install.sh --list                     list the containers it manages
-#   ./install.sh --verify                   check that they still work
-#   ./install.sh --remove NAME              delete a container and its data
-#
-# Every container carries the label agent-workspace.manager=install.sh, so the
-# tool only ever sees (and deletes) its own containers.
+# The installer itself is the only host-side requirement besides a container
+# engine: podman is preferred, docker works too.
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
-PROG="$(basename -- "$0")"
-REPO_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-
-PODMAN="${PODMAN:-podman}"
-IMAGE="${IMAGE:-}"
-CONF_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/agent-workspace"
-ENV_DIR="${CONF_HOME}/containers"
-LABEL_KEY="agent-workspace.manager"
-LABEL_VALUE="install.sh"
-VOLUME_PREFIX="agent-workspace"
-
-DRY_RUN=0
-NO_PULL=0
-REPLACE=0
-ASSUME_YES=0
-QUIET=0
-ACTION=""
-DECL_FILE=""
-SAVE_FILE=""
-OPT_AGENT=""
-OPT_NAME=""
-OPT_MODE=""
-OPT_WORKSPACE=""
-OPT_COUNT=""
-EXTRA_ENVS=()
-EXTRA_ARGS=()
-
-if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RESET=$'\033[0m'
-else
-  BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; RESET=""
+if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]] || { [[ "${BASH_VERSINFO[0]}" -eq 4 ]] && [[ "${BASH_VERSINFO[1]}" -lt 4 ]]; }; then
+  printf 'install.sh needs bash 4.4 or newer (found %s)\n' "${BASH_VERSION:-unknown}" >&2
+  exit 1
 fi
 
-# --- output -----------------------------------------------------------------
+INSTALLER_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=installer/lib/engine.sh
+source "${INSTALLER_HOME}/installer/lib/engine.sh"
+# shellcheck source=installer/lib/state.sh
+source "${INSTALLER_HOME}/installer/lib/state.sh"
+# shellcheck source=installer/lib/ui.sh
+source "${INSTALLER_HOME}/installer/lib/ui.sh"
+# shellcheck source=installer/lib/agents.sh
+source "${INSTALLER_HOME}/installer/lib/agents.sh"
+# shellcheck source=installer/lib/commands.sh
+source "${INSTALLER_HOME}/installer/lib/commands.sh"
 
-msg() { printf '%s\n' "$*"; }
+CONF_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/agent-workspace"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/agent-workspace"
+LABEL_NS="agent-workspace"
+LABEL_KEY="${LABEL_NS}.manager"
+LABEL_VALUE="install.sh"
+VOLUME_PREFIX="agent-workspace"
+SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
+AGENT_USER="agent"
+IMAGE=""
+ENGINE_REQUEST="auto"
 
-heading() {
-  if [[ "${QUIET}" -eq 0 ]]; then printf '\n%s%s%s\n' "$BOLD" "$*" "$RESET"; fi
-}
+NO_TUI=0
+DRY_RUN=0
+NO_PULL=0
+ASSUME_YES=0
+QUIET=0
+STRICT=0
+PURGE_SNAPSHOTS=0
+KEEP_VOLUME=0
+LOGS_FOLLOW=0
+LOGS_TAIL=50
+FORK_LIVE=0
+OPT_AGENT=""
+OPT_NAME=""
+OPT_COUNT=""
+OPT_MODE=""
+OPT_WORKSPACE=""
+OPT_TO=""
+UPGRADE_IMAGE=""
+OPT_FROM=""
+SNAPSHOT_LABEL=""
+DECL_FILE=""
+SAVE_FILE=""
+SHOW_HELP=0
+LEGACY_LIST=0
+LEGACY_VERIFY=0
+LEGACY_REMOVE=0
+EXTRA_ENVS=()
+ARGS=()
+SPEC_NAME=()
+SPEC_AGENT=()
+SPEC_MODE=()
+SPEC_WORKSPACE=()
+declare -A SECRETS=()
 
-ok() {
-  if [[ "${QUIET}" -eq 0 ]]; then printf '  %sok%s   %s\n' "$GREEN" "$RESET" "$*"; fi
-}
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
+  BOLD=$'\033[1m'
+  RED=$'\033[31m'
+  GREEN=$'\033[32m'
+  YELLOW=$'\033[33m'
+  RESET=$'\033[0m'
+else
+  BOLD=""; RED=""; GREEN=""; YELLOW=""; RESET=""
+fi
 
-warn() { printf '  %swarn%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+# --- output ----------------------------------------------------------------
 
-die() { printf '%serror%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
-
-have_cmd() { command -v -- "$1" >/dev/null 2>&1; }
+msg()  { [[ "${QUIET:-0}" -eq 1 ]] || printf '%s\n' "$*"; }
+heading() { [[ "${QUIET:-0}" -eq 1 ]] || printf '\n%s%s%s\n' "${BOLD}" "$*" "${RESET}"; }
+ok()   { [[ "${QUIET:-0}" -eq 1 ]] || printf '%s✓%s %s\n' "${GREEN}" "${RESET}" "$*"; }
+warn() { printf '%s!%s %s\n' "${YELLOW}" "${RESET}" "$*" >&2; }
+die()  { printf '%s✗%s %s\n' "${RED}" "${RESET}" "$*" >&2; exit 1; }
+report_ok()  { printf '%s✓%s %s\n' "${GREEN}" "${RESET}" "$*"; }
+report_bad() { printf '%s✗%s %s\n' "${RED}" "${RESET}" "$*"; }
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
   cat <<'USAGE'
 agent-workspace installer
 
-Usage:
-  ./install.sh [options]
+  ./install.sh                 open the interactive TUI (the normal way to use
+                               this project: pick agents, name the containers,
+                               choose a lifecycle, create them)
+  ./install.sh create [opts]   create containers without the TUI
+  ./install.sh list            list the containers created by this installer
+  ./install.sh enter NAME      run the container's agent interactively
+  ./install.sh shell NAME      open a login shell inside a container
+  ./install.sh logs NAME       show the container log
+  ./install.sh start|stop|restart NAME
+  ./install.sh snapshot NAME [--label TEXT] [--keep N]
+                               commit the filesystem and archive the home volume
+  ./install.sh snapshots NAME  list snapshots of a container
+  ./install.sh rollback NAME [--to ID]
+                               replace the container with a snapshot
+  ./install.sh recover NAME    rebuild a lost or stopped container
+  ./install.sh fork SRC NEW [--agent A] [--mode M] [--workspace DIR] [--from ID] [--live]
+                               branch a new container off an existing one
+  ./install.sh upgrade NAME [--image REF]
+                               move a container to a newer image (snapshot first)
+  ./install.sh remove NAME...  remove containers (add --purge-snapshots)
+  ./install.sh doctor [--strict]
+                               check engines, containers, volumes, credentials
 
-Interactive (default):
-  ./install.sh                      asks how many containers to create, what to
-                                    call them, which agent each one runs,
-                                    persistent or ephemeral, and can store the
-                                    agent's API key.
+create options
+  --agent NAME        agent to run (see: install.sh create --help-agents)
+  --name NAME         container name (default: <agent>-box)
+  --count N           create N containers (N > 1 names them NAME-1..NAME-N)
+  --mode MODE         persistent (systemd, keeps state) or ephemeral (run once)
+  --workspace DIR     host directory mounted at /workspace
+  --env KEY=VALUE     extra environment variable for the container
+  --file FILE         read a declaration file ('-' for stdin):
+                        name agent [mode] [workspace]
+  --save FILE         write the created containers back out in that format
 
-Declarative:
-  --file FILE                       create the containers listed in FILE ("-"
-                                    reads the list from stdin). Lines are:
-                                      # name        agent     mode        workspace
-                                      dev-dsh       dsh       persistent  ~/agent-workspace/dev-dsh
-                                      scratch       opencode  ephemeral
-  --save FILE                       after a successful run, write the created
-                                    containers to FILE in that same format
+global options
+  --engine auto|podman|docker   which engine to use (default: auto)
+  --image REF                   image to run (default: from image.env)
+  --no-tui                      never start the TUI; fail instead of prompting
+  --dry-run, -n                 print the engine commands instead of running
+  --no-pull                     never pull an image
+  --yes, -y                     assume yes for confirmations
+  --quiet, -q                   only print warnings and errors
+  --strict                      doctor only: exit non-zero on any problem
+  --keep N                      snapshot only: keep the newest N snapshots (default 5)
+  --purge-snapshots             remove: drop snapshots too
+  --keep-volume                 remove: keep the home volume
+  --follow, -f / --tail N       logs: follow the log / show the last N lines
+  --help-agents                 list the agents this build offers
+  --help, -h                    this help
 
-What to create:
-  --agent NAME                      agent to run (default: ask; dsh when not
-                                    interactive)
-  --name NAME                       first container name (default:
-                                    agent-workspace-AGENT)
-  --count N                         create N containers in one go
-  --mode persistent|ephemeral       persistent (default): systemd stays up, you
-                                    exec into it; ephemeral: podman run --rm,
-                                    gone as soon as the agent exits
-  --workspace DIR                   host directory mounted at /workspace
-  --env KEY=VALUE                   environment variable for the container
-                                    (repeatable)
-  --image REF                       image to run (default: image.env or GHCR)
-  --extra-arg ARG                   extra podman argument (repeatable)
-
-Managing what exists:
-  --list                            list containers created by this installer
-  --verify                          check the containers and their agent binaries
-  --remove NAME                     remove a container, its home volume and its
-                                    credential file
-
-Other:
-  --dry-run, -n                     print the podman commands instead of running
-  --no-pull                         never pull the image
-  --replace                         recreate a container that already exists
-  --yes, -y                         assume yes for confirmations
-  --quiet                           less output
-  --help, -h                        this text
-
-Environment:
-  PODMAN                            podman binary to use (default: podman)
-  IMAGE                             default image, same as --image
-  DEEPSEEK_API_KEY                  used for dsh/opencode instead of prompting
-  NO_COLOR                          disable coloured output
-
-Credentials live in ~/.config/agent-workspace/containers/NAME.env (mode 0600)
-and are handed to the container with --env-file.
+host paths
+  containers and snapshots:  $XDG_DATA_HOME (default ~/.local/share)/agent-workspace
+  credentials (mode 600):    $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/containers
 USAGE
 }
 
-# --- small helpers ----------------------------------------------------------
+# --- configuration helpers -------------------------------------------------
 
 env_value() {
-  local key="$1" file="$2" line
-  [[ -r "$file" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}=" "$file" | tail -n1)" || return 1
-  line="${line#*=}"
-  line="${line%\"}"
-  line="${line#\"}"
-  printf '%s' "$line"
+  local key="${1}" file="${2}" value=""
+  [[ -f "$file" ]] || return 0
+  value="$(sed -n "s/^${key}=//p" "$file" | head -n 1)"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s' "$value"
 }
 
 default_image() {
-  local name="agent-workspace" org="Wraindrock" tag="latest" value
-  if [[ -r "${REPO_DIR}/image.env" ]]; then
-    value="$(env_value IMAGE_NAME "${REPO_DIR}/image.env" || true)"
-    if [[ -n "$value" ]]; then name="$value"; fi
-    value="$(env_value REPO_ORGANIZATION "${REPO_DIR}/image.env" || true)"
-    if [[ -n "$value" ]]; then org="$value"; fi
-    value="$(env_value DEFAULT_TAG "${REPO_DIR}/image.env" || true)"
-    if [[ -n "$value" ]]; then tag="$value"; fi
-  fi
+  local name org tag
+  name="$(env_value IMAGE_NAME "${INSTALLER_HOME}/image.env")"
+  org="$(env_value REPO_ORGANIZATION "${INSTALLER_HOME}/image.env")"
+  tag="$(env_value DEFAULT_TAG "${INSTALLER_HOME}/image.env")"
+  name="${name:-agent-workspace}"
+  org="${org:-wraindrock}"
+  tag="${tag:-latest}"
   printf 'ghcr.io/%s/%s:%s' "${org,,}" "${name,,}" "$tag"
 }
 
-default_workspace() { printf '%s' "${HOME}/agent-workspace/$1"; }
-
-env_file_path() { printf '%s' "${ENV_DIR}/$1.env"; }
-
-validate_name() {
-  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-    die "invalid container name '$1': use letters, digits, dot, dash or underscore"
-  fi
-}
-
-validate_mode() {
-  case "$1" in
-    persistent|ephemeral) return 0 ;;
-    *) die "invalid mode '$1': expected persistent or ephemeral" ;;
-  esac
-}
-
-confirm() {
-  local question="$1" answer
-  printf '%s? [Y/n] ' "$question" >&2
-  read -r answer || return 1
-  case "${answer:-y}" in
-    y|Y|yes|YES) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# --- the agent list ---------------------------------------------------------
-
-AGENT_NAMES=()
-AGENT_BINS=()
-AGENT_TITLES=()
-AGENT_ENVS=()
-
-# Used when the image cannot be queried (no podman access, older image).
-default_agents() {
-  printf '%s\t%s\t%s\t%s\n' dsh dsh 'DSH (DeepSeek Harness)' DEEPSEEK_API_KEY
-  printf '%s\t%s\t%s\t%s\n' opencode opencode 'OpenCode' DEEPSEEK_API_KEY
-}
-
-# The image knows best which agents it ships: it publishes an agent catalogue
-# in manifest.json. Run the image's own jq so the host needs nothing but podman.
-image_agents() {
-  local filter
-  filter='if ((.agentCatalog // {}) | length) > 0 then .agentCatalog | to_entries[] | [.key, ((.value.binaries // []) | join(" ")), (.value.title // ""), ((.value.env // []) | join(" "))] | @tsv else (.agentBinaries // {}) | to_entries[] | [.key, ((.value // []) | join(" ")), .key, ""] | @tsv end'
-  "$PODMAN" run --rm --entrypoint /usr/bin/jq "$IMAGE" -r "$filter" /usr/share/agent-workspace/manifest.json 2>/dev/null || true
-}
-
-agents_from_table() {
-  local name bins title envs
-  while IFS=$'\t' read -r name bins title envs; do
-    if [[ -z "$name" ]]; then continue; fi
-    AGENT_NAMES+=("$name")
-    AGENT_BINS+=("${bins%% *}")
-    if [[ -n "$title" ]]; then AGENT_TITLES+=("$title"); else AGENT_TITLES+=("$name"); fi
-    AGENT_ENVS+=("${envs:-}")
-  done <<< "$1"
-}
-
-load_agents() {
-  local table=""
-  AGENT_NAMES=(); AGENT_BINS=(); AGENT_TITLES=(); AGENT_ENVS=()
-  if have_cmd "${PODMAN}" || [[ -x "${PODMAN}" ]]; then
-    table="$(image_agents)"
-  fi
-  if [[ -z "$table" ]]; then
-    table="$(default_agents)"
-    warn "could not read the agent catalogue from ${IMAGE}; using the built-in list"
-  fi
-  agents_from_table "$table"
-  if [[ "${#AGENT_NAMES[@]}" -eq 0 ]]; then agents_from_table "$(default_agents)"; fi
-  if [[ "${#AGENT_NAMES[@]}" -eq 0 ]]; then die "no agents are available"; fi
-}
-
-agent_index() {
-  local name="$1" i
-  for ((i = 0; i < ${#AGENT_NAMES[@]}; i++)); do
-    if [[ "${AGENT_NAMES[i]}" == "$name" ]]; then printf '%s' "$i"; return 0; fi
-  done
-  return 1
-}
-
-agent_binary_of() {
-  local idx
-  if idx="$(agent_index "$1")"; then printf '%s' "${AGENT_BINS[idx]}"; return 0; fi
-  printf '%s' "$1"
-}
-
-agent_title_of() {
-  local idx
-  if idx="$(agent_index "$1")"; then printf '%s' "${AGENT_TITLES[idx]}"; return 0; fi
-  printf '%s' "$1"
-}
-
-# --- credentials ------------------------------------------------------------
-
-declare -A SECRETS=()
-
-# Pick up credentials that are already in the environment, unless the user
-# typed one in during this run.
-collect_ambient_secrets() {
-  local agent="$1" idx key ambient
-  idx="$(agent_index "$agent")" || return 0
-  [[ -n "${AGENT_ENVS[idx]:-}" ]] || return 0
-  local -a vars=()
-  read -r -a vars <<< "${AGENT_ENVS[idx]}"
-  for key in "${vars[@]}"; do
-    if [[ -n "${SECRETS[$key]:-}" ]]; then continue; fi
-    ambient="${!key}"
-    if [[ -n "$ambient" ]]; then
-      SECRETS[$key]="$ambient"
-      ok "${key} taken from this shell's environment"
-    fi
-  done
-}
+default_workspace() { printf '%s' "${WORKSPACE_ROOT:-$HOME/agent-workspace}/${1}"; }
+validate_name() { [[ "${1}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; }
 
 write_env_file() {
-  local name="$1"; shift
-  local path entry key old_umask
-  if [[ $# -eq 0 ]]; then return 0; fi
-  path="$(env_file_path "$name")"
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    for entry in "$@"; do
-      key="${entry%%=*}"
-      msg "${DIM}would store ${key} in ${path}${RESET}"
-    done
+  local name="${1}"
+  shift
+  local path dir kv
+  path="$(env_file_for "$name")"
+  dir="$(dirname "$path")"
+  if [[ "${#}" -eq 0 ]]; then
+    msg "no credentials collected for ${name}; you can add them later in ${path}"
     return 0
   fi
-  install -d -m 0700 "${ENV_DIR}"
-  old_umask="$(umask)"
-  umask 077
-  : > "$path"
-  for entry in "$@"; do
-    if [[ "$entry" == *$'\n'* ]]; then die "credential values must be single lines"; fi
-    printf '%s\n' "$entry" >> "$path"
-  done
-  chmod 0600 "$path"
-  umask "$old_umask"
-  ok "stored credentials in ${path}"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    printf 'dry-run: would write %s with' "$path"
+    for kv in "$@"; do printf ' %s' "${kv%%=*}"; done
+    printf '\n'
+    return 0
+  fi
+  install -d -m 0700 "$dir"
+  ( umask 077; : >"$path"; chmod 0600 "$path"; for kv in "$@"; do printf '%s\n' "$kv" >>"${path}"; done )
+  ok "wrote credentials to ${path} (mode 600)"
 }
 
-# --- specs ------------------------------------------------------------------
+collect_secret() {
+  local agent="${1}" key="${2}" value=""
+  [[ -n "${SECRETS[${key}]:-}" ]] && return 0
+  if [[ -n "${!key:-}" ]]; then
+    SECRETS["${key}"]="${!key}"
+    msg "using ${key} from the environment"
+    return 0
+  fi
+  if ! ui_enabled; then
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      SECRETS["${key}"]="dry-run-placeholder"
+    else
+      msg "no terminal for prompts: skipping ${key} (add it later to $(env_file_for "$agent"))"
+    fi
+    return 0
+  fi
+  value="$(ui_secret "${key} for ${agent} (enter to skip)")" || value=""
+  if [[ -n "$value" ]]; then
+    SECRETS["${key}"]="${value}"
+  fi
+  return 0
+}
 
-C_NAME=()
-C_AGENT=()
-C_MODE=()
-C_WORKSPACE=()
-
-add_spec() {
-  C_NAME+=("$1"); C_AGENT+=("$2"); C_MODE+=("$3"); C_WORKSPACE+=("$4")
+spec_add() {
+  SPEC_NAME+=("${1}")
+  SPEC_AGENT+=("${2}")
+  SPEC_MODE+=("${3}")
+  SPEC_WORKSPACE+=("${4}")
 }
 
 show_specs() {
-  local i
-  if [[ "${#C_NAME[@]}" -eq 0 ]]; then msg "  (nothing)"; return 0; fi
-  printf '%-24s %-12s %-11s %s\n' NAME AGENT MODE WORKSPACE
-  for ((i = 0; i < ${#C_NAME[@]}; i++)); do
-    printf '%-24s %-12s %-11s %s\n' "${C_NAME[i]}" "${C_AGENT[i]}" "${C_MODE[i]}" "${C_WORKSPACE[i]}"
+  local index
+  printf '%-18s %-10s %-11s %s\n' NAME AGENT MODE WORKSPACE
+  for index in "${!SPEC_NAME[@]}"; do
+    printf '%-18s %-10s %-11s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
   done
 }
 
 parse_declaration() {
-  local src="$1" line name agent mode workspace
-  if [[ "$src" == "-" ]]; then
-    exec 3<&0
+  local source="${1}" line name agent mode workspace lineno=0
+  exec 3<&0
+  if [[ "$source" == "-" ]]; then
+    exec 0<&3
   else
-    [[ -r "$src" ]] || die "cannot read declaration file: $src"
-    exec 3<"$src"
+    [[ -f "$source" ]] || die "declaration file ${source} does not exist"
+    exec 0<"$source"
   fi
-  while IFS= read -r line <&3 || [[ -n "$line" ]]; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    lineno=$((lineno + 1))
     line="${line%%#*}"
-    # shellcheck disable=SC2086 # declaration files are whitespace separated
+    # shellcheck disable=SC2086 # the declaration is whitespace separated
     set -- $line
-    if [[ $# -eq 0 ]]; then continue; fi
-    if [[ $# -lt 2 || $# -gt 4 ]]; then
-      die "cannot parse '$line': expected 'name agent [mode] [workspace]'"
-    fi
-    name="$1"; agent="$2"; mode="${3:-persistent}"; workspace="${4:-}"
-    if [[ -z "$workspace" ]]; then workspace="$(default_workspace "$name")"; fi
-    validate_name "$name"
-    validate_mode "$mode"
-    if ! agent_index "$agent" >/dev/null; then
-      die "unknown agent '$agent' in the declaration (image offers: ${AGENT_NAMES[*]})"
-    fi
-    add_spec "$name" "$agent" "$mode" "$workspace"
+    [[ "${#}" -gt 0 ]] || continue
+    name="${1}"; agent="${2:-}"
+    mode="${3:-persistent}"; workspace="${4:-}"
+    [[ "${#}" -ge 2 ]] || die "${source}:${lineno}: expected 'name agent [mode] [workspace]'"
+    validate_name "$name" || die "${source}:${lineno}: invalid container name '${name}'"
+    agent_known "$agent" || die "${source}:${lineno}: unknown agent '${agent}'"
+    [[ "$mode" == "persistent" || "$mode" == "ephemeral" ]] || die "${source}:${lineno}: unknown mode '${mode}'"
+    [[ -n "$workspace" ]] || workspace="$(default_workspace "$name")"
+    spec_add "$name" "$agent" "$mode" "$workspace"
   done
-  exec 3<&-
+  exec 0<&3 3<&-
 }
 
-bulk_specs() {
-  local count="${OPT_COUNT:-1}" agent mode workspace i name base idx
-  agent="${OPT_AGENT:-${AGENT_NAMES[0]}}"
-  mode="${OPT_MODE:-persistent}"
-  idx="$(agent_index "$agent")" || die "unknown agent '$agent' (image offers: ${AGENT_NAMES[*]})"
-  : "$idx"
-  validate_mode "$mode"
-  if [[ ! "$count" =~ ^[0-9]+$ ]] || (( count < 1 )); then die "--count needs a positive number"; fi
-  base="${OPT_NAME:-}"
-  if [[ -z "$base" ]]; then base="agent-workspace-${agent}"; fi
-  validate_name "$base"
-  for ((i = 1; i <= count; i++)); do
-    if (( i == 1 )); then name="$base"; else name="${base}-${i}"; fi
-    workspace="${OPT_WORKSPACE}"
-    if [[ -z "$workspace" ]]; then workspace="$(default_workspace "$name")"; fi
-    add_spec "$name" "$agent" "$mode" "$workspace"
-  done
-}
-
-# --- wizard -----------------------------------------------------------------
-
-prompt() {
-  local question="$1" default="${2:-}" answer
-  if [[ -n "$default" ]]; then printf '%s [%s]: ' "$question" "$default" >&2; else printf '%s: ' "$question" >&2; fi
-  read -r answer || die "input closed before the wizard finished"
-  if [[ -z "$answer" ]]; then printf '%s' "$default"; else printf '%s' "$answer"; fi
-}
-
-prompt_secret() {
-  local question="$1" answer
-  printf '%s: ' "$question" >&2
-  read -r -s answer || die "input closed before the wizard finished"
-  printf '\n' >&2
-  printf '%s' "$answer"
-}
-
-prompt_choice() {
-  local question="$1" default="$2" answer i
-  shift 2
-  local -a choices=("$@")
-  printf '%s\n' "$question" >&2
-  for ((i = 0; i < ${#choices[@]}; i++)); do
-    printf '  %d) %s\n' "$((i + 1))" "${choices[i]}" >&2
-  done
-  printf 'choice [%s]: ' "$default" >&2
-  read -r answer || die "input closed before the wizard finished"
-  if [[ -z "$answer" ]]; then printf '%s' "$default"; return 0; fi
-  if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#choices[@]} )); then
-    printf '%s' "${choices[answer-1]}"
-    return 0
-  fi
-  printf '%s' "$answer"
-}
-
-interactive_wizard() {
-  local count i agent name mode workspace key value default_name idx
-  local -a agent_vars=()
-
-  heading "agent-workspace installer"
-  msg "image:  ${IMAGE}"
-  msg "agents: ${AGENT_NAMES[*]}"
-  msg "a persistent container keeps running and is entered with podman exec;"
-  msg "an ephemeral container serves one agent session and is then removed."
-
-  count="$(prompt 'How many containers do you want to create' "${OPT_COUNT:-1}")"
-  if [[ ! "$count" =~ ^[0-9]+$ ]] || (( count < 1 )); then die "not a number of containers: $count"; fi
-
-  for ((i = 1; i <= count; i++)); do
-    heading "Container ${i} of ${count}"
-    agent="$(prompt_choice 'Which agent should it run' "${AGENT_NAMES[0]}" "${AGENT_NAMES[@]}")"
-    idx="$(agent_index "$agent")" || die "unknown agent '$agent' (image offers: ${AGENT_NAMES[*]})"
-    default_name="${agent}-box"
-    if (( i > 1 )); then default_name="${agent}-box-${i}"; fi
-    name="$(prompt 'Container name' "$default_name")"
-    validate_name "$name"
-    mode="$(prompt_choice 'How should it run' persistent persistent ephemeral)"
-    validate_mode "$mode"
-    if [[ -n "${OPT_WORKSPACE}" ]]; then
-      workspace="${OPT_WORKSPACE}"
-    else
-      workspace="$(prompt 'Host directory to mount at /workspace' "$(default_workspace "$name")")"
-    fi
-    add_spec "$name" "$agent" "$mode" "$workspace"
-
-    if [[ -n "${AGENT_ENVS[idx]:-}" ]]; then
-      read -r -a agent_vars <<< "${AGENT_ENVS[idx]}"
-      for key in "${agent_vars[@]}"; do
-        if [[ -n "${SECRETS[$key]:-}" ]]; then continue; fi
-        if [[ -n "${!key}" ]]; then
-          SECRETS[$key]="${!key}"
-          ok "${key} taken from this shell's environment"
-          continue
-        fi
-        value="$(prompt_secret "${key} for ${name} (empty to skip)")"
-        if [[ -n "$value" ]]; then SECRETS[$key]="$value"; ok "stored ${key}"; fi
-      done
-    fi
-  done
-
-  heading "Summary"
-  show_specs
-  if [[ "${ASSUME_YES}" -ne 1 ]]; then
-    confirm "Create these containers" || die "aborted"
-  fi
-}
-
-# --- podman -----------------------------------------------------------------
-
-run_podman() {
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    printf '%s%s%s' "$DIM" "$PODMAN" "$RESET"
-    printf ' %q' "$@"
-    printf '\n'
-    return 0
-  fi
-  "$PODMAN" "$@"
-}
-
-require_podman() {
-  if ! have_cmd "${PODMAN}" && [[ ! -x "${PODMAN}" ]]; then
-    die "podman is required but '$PODMAN' was not found (set PODMAN=/path/to/podman)"
-  fi
-}
-
-container_exists() { "$PODMAN" container exists "$1" >/dev/null 2>&1; }
-
-volume_exists() { "$PODMAN" volume exists "$1" >/dev/null 2>&1; }
-
-ensure_image() {
-  if "$PODMAN" image exists "$IMAGE" >/dev/null 2>&1; then return 0; fi
-  if [[ "${NO_PULL}" -eq 1 ]]; then die "image ${IMAGE} is not present locally and --no-pull was given"; fi
-  if [[ "${DRY_RUN}" -eq 1 ]]; then msg "${DIM}would pull ${IMAGE}${RESET}"; return 0; fi
-  heading "Pulling ${IMAGE}"
-  run_podman pull "$IMAGE"
-}
-
-# --- create / remove / list / verify ----------------------------------------
-
-create_container() {
-  local name="$1" agent="$2" mode="$3" workspace="$4"
-  local idx binary envfile entry key title
-  local -a vars=() entries=() args=() fallback=()
-  idx="$(agent_index "$agent")" || die "unknown agent '$agent'"
-  binary="${AGENT_BINS[idx]}"
-  title="${AGENT_TITLES[idx]}"
-
-  if container_exists "$name"; then
-    if [[ "${REPLACE}" -eq 1 ]]; then
-      heading "Replacing ${name}"
-      remove_container "$name"
-    else
-      die "container '${name}' already exists (pass --replace to recreate it)"
-    fi
-  fi
-
-  if [[ -n "${AGENT_ENVS[idx]:-}" ]]; then
-    read -r -a vars <<< "${AGENT_ENVS[idx]}"
-  fi
-  for key in "${vars[@]:-}"; do
-    if [[ -z "$key" ]]; then continue; fi
-    if [[ -n "${SECRETS[$key]:-}" ]]; then entries+=("${key}=${SECRETS[$key]}"); fi
-  done
-  for entry in "${EXTRA_ENVS[@]:-}"; do
-    if [[ -n "$entry" ]]; then entries+=("$entry"); fi
-  done
-
-  envfile="$(env_file_path "$name")"
-  if [[ "${DRY_RUN}" -eq 0 ]]; then mkdir -p -- "$workspace"; fi
-  if [[ "${#entries[@]}" -gt 0 ]]; then write_env_file "$name" "${entries[@]}"; fi
-
-  args=(run)
-  if [[ "$mode" == persistent ]]; then
-    args+=(--detach --restart unless-stopped --systemd=always)
-    args+=(--volume "${VOLUME_PREFIX}-${name}-home:/home/agent")
-  else
-    args+=(--rm --interactive --tty)
-  fi
-  args+=(--name "$name" --hostname "$name")
-  args+=(--label "${LABEL_KEY}=${LABEL_VALUE}")
-  args+=(--label "agent-workspace.agent=$agent")
-  args+=(--label "agent-workspace.mode=$mode")
-  args+=(--volume "${workspace}:/workspace:z" --workdir /workspace)
-  args+=(--env "AGENT_WORKSPACE_AGENT=$agent")
-  if [[ "${#entries[@]}" -gt 0 ]]; then args+=(--env-file "$envfile"); fi
-  for entry in "${EXTRA_ARGS[@]:-}"; do
-    if [[ -n "$entry" ]]; then args+=("$entry"); fi
-  done
-  args+=("$IMAGE")
-  if [[ "$mode" != persistent ]]; then args+=("$binary"); fi
-
-  heading "Creating ${name} (${agent} / ${mode})"
-  if [[ "$mode" == persistent ]]; then
-    if ! run_podman "${args[@]}"; then
-      warn "podman could not boot systemd in ${name}; retrying it as a keep-alive container"
-      run_podman rm --force "$name" >/dev/null 2>&1 || true
-      fallback=(run --detach --restart unless-stopped --name "$name" --hostname "$name")
-      fallback+=(--label "${LABEL_KEY}=${LABEL_VALUE}")
-      fallback+=(--label "agent-workspace.agent=$agent" --label "agent-workspace.mode=$mode")
-      fallback+=(--volume "${workspace}:/workspace:z" --volume "${VOLUME_PREFIX}-${name}-home:/home/agent")
-      fallback+=(--env "AGENT_WORKSPACE_AGENT=$agent")
-      if [[ "${#entries[@]}" -gt 0 ]]; then fallback+=(--env-file "$envfile"); fi
-      for entry in "${EXTRA_ARGS[@]:-}"; do
-        if [[ -n "$entry" ]]; then fallback+=("$entry"); fi
-      done
-      fallback+=(--entrypoint /bin/sleep "$IMAGE" inf)
-      run_podman "${fallback[@]}"
-      warn "${name} is a keep-alive container without systemd; start the agent with 'podman exec -it ${name} ${binary}'"
-    fi
-  else
-    run_podman "${args[@]}"
-  fi
-  ok "${name} created (${title})"
-}
-
-remove_container() {
-  local name="$1" envfile volume
-  envfile="$(env_file_path "$name")"
-  volume="${VOLUME_PREFIX}-${name}-home"
-  if container_exists "$name"; then
-    run_podman rm --force "$name"
-    ok "removed container ${name}"
-  else
-    warn "no container named '${name}'"
-  fi
-  if volume_exists "$volume"; then
-    run_podman volume rm "$volume"
-    ok "removed volume ${volume}"
-  fi
-  if [[ -f "$envfile" ]]; then
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-      msg "${DIM}would delete ${envfile}${RESET}"
-    else
-      rm -f -- "$envfile"
-      ok "removed ${envfile}"
-    fi
-  fi
-}
-
-list_containers() {
-  local out name status agent mode
-  heading "agent-workspace containers"
-  out="$("$PODMAN" ps --all --filter "label=${LABEL_KEY}=${LABEL_VALUE}" --format '{{.Names}}\t{{.Status}}' 2>/dev/null || true)"
-  if [[ -z "$out" ]]; then
-    msg "  none yet -- run ./${PROG} to create one"
-    return 0
-  fi
-  printf '%-24s %-12s %-11s %s\n' NAME AGENT MODE STATUS
-  while IFS=$'\t' read -r name status; do
-    if [[ -z "$name" ]]; then continue; fi
-    agent="$("$PODMAN" inspect --format '{{index .Config.Labels "agent-workspace.agent"}}' "$name" 2>/dev/null || true)"
-    mode="$("$PODMAN" inspect --format '{{index .Config.Labels "agent-workspace.mode"}}' "$name" 2>/dev/null || true)"
-    printf '%-24s %-12s %-11s %s\n' "$name" "${agent:-?}" "${mode:-?}" "$status"
-  done <<< "$out"
-}
-
-verify_containers() {
-  local out name agent mode binary state failures=0
-  heading "Verifying agent-workspace containers"
-  out="$("$PODMAN" ps --all --filter "label=${LABEL_KEY}=${LABEL_VALUE}" --format '{{.Names}}' 2>/dev/null || true)"
-  if [[ -z "$out" ]]; then
-    warn "no containers to verify"
-    return 0
-  fi
-  while IFS= read -r name; do
-    if [[ -z "$name" ]]; then continue; fi
-    agent="$("$PODMAN" inspect --format '{{index .Config.Labels "agent-workspace.agent"}}' "$name" 2>/dev/null || true)"
-    mode="$("$PODMAN" inspect --format '{{index .Config.Labels "agent-workspace.mode"}}' "$name" 2>/dev/null || true)"
-    state="$("$PODMAN" inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)"
-    binary="$(agent_binary_of "${agent:-}")"
-    if [[ "$mode" == persistent ]]; then
-      if [[ "$state" == running ]]; then
-        ok "${name} is running"
-      else
-        warn "${name} is ${state:-unknown} (expected running)"
-        failures=$((failures + 1))
-      fi
-      if [[ -n "$binary" ]]; then
-        if "$PODMAN" exec "$name" bash -lc "command -v ${binary}" >/dev/null 2>&1; then
-          ok "${name} can run ${binary}"
-        else
-          warn "${name} does not have ${binary} on PATH"
-          failures=$((failures + 1))
-        fi
-      fi
-    else
-      ok "${name} is a one-shot container (nothing to check while it is not running)"
-    fi
-  done <<< "$out"
-  if (( failures > 0 )); then die "${failures} check(s) failed"; fi
-  ok "all containers look healthy"
-}
-
-print_hints() {
-  local i name agent mode binary workspace
-  heading "Done"
-  for ((i = 0; i < ${#C_NAME[@]}; i++)); do
-    name="${C_NAME[i]}"; agent="${C_AGENT[i]}"; mode="${C_MODE[i]}"; workspace="${C_WORKSPACE[i]}"
-    binary="$(agent_binary_of "$agent")"
-    if [[ "$mode" == persistent ]]; then
-      msg "  ${name} (persistent)"
-      msg "    podman exec -it ${name} ${binary}    # run the agent"
-      msg "    podman exec -it ${name} bash         # shell inside the sandbox"
-      msg "    ./${PROG} --remove ${name}           # delete it again"
-    else
-      msg "  ${name} (ephemeral), recreate a session with"
-      msg "    podman run --rm -it --volume \"${workspace}:/workspace:z\" --workdir /workspace ${IMAGE} ${binary}"
-    fi
-  done
-}
-
-# --- argument parsing -------------------------------------------------------
-
-parse_args() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --file) DECL_FILE="${2:-}"; shift 2 ;;
-      --save) SAVE_FILE="${2:-}"; shift 2 ;;
-      --image) IMAGE="${2:-}"; shift 2 ;;
-      --agent) OPT_AGENT="${2:-}"; shift 2 ;;
-      --name) OPT_NAME="${2:-}"; shift 2 ;;
-      --count) OPT_COUNT="${2:-}"; shift 2 ;;
-      --mode) OPT_MODE="${2:-}"; shift 2 ;;
-      --workspace) OPT_WORKSPACE="${2:-}"; shift 2 ;;
-      --env) EXTRA_ENVS+=("${2:-}"); shift 2 ;;
-      --extra-arg) EXTRA_ARGS+=("${2:-}"); shift 2 ;;
-      --list) ACTION="list"; shift ;;
-      --verify) ACTION="verify"; shift ;;
-      --remove) ACTION="remove"; OPT_NAME="${2:-}"; shift 2 ;;
-      --dry-run|-n) DRY_RUN=1; shift ;;
-      --no-pull) NO_PULL=1; shift ;;
-      --replace) REPLACE=1; shift ;;
-      --yes|-y) ASSUME_YES=1; shift ;;
-      --quiet) QUIET=1; shift ;;
-      --help|-h) ACTION="help"; shift ;;
-      --) shift ;;
-      *) die "unknown argument: $1 (try --help)" ;;
-    esac
-  done
-  if [[ "${ACTION}" == "remove" && -z "${OPT_NAME}" ]]; then die "--remove needs a container name"; fi
-  if [[ "${ACTION}" != "" && -n "${DECL_FILE}" ]]; then die "--${ACTION} cannot be combined with --file"; fi
-}
-
-save_declaration() {
-  local file="$1" i stamp
-  if [[ "${DRY_RUN}" -eq 1 ]]; then msg "${DIM}would write ${file}${RESET}"; return 0; fi
-  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p -- "$(dirname -- "$file")"
+save_specs() {
+  local file="${1}" index
   {
-    printf '# agent-workspace containers, written by %s on %s\n' "$PROG" "$stamp"
-    printf '# name\tagent\tmode\tworkspace\n'
-    for ((i = 0; i < ${#C_NAME[@]}; i++)); do
-      printf '%s\t%s\t%s\t%s\n' "${C_NAME[i]}" "${C_AGENT[i]}" "${C_MODE[i]}" "${C_WORKSPACE[i]}"
+    printf '# name agent mode workspace\n'
+    for index in "${!SPEC_NAME[@]}"; do
+      printf '%s %s %s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
     done
-  } > "$file"
+  } >"$file"
   ok "wrote ${file}"
 }
 
-main() {
-  if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then die "bash 4 or newer is required"; fi
-  parse_args "$@"
+# --- create ----------------------------------------------------------------
 
-  case "${ACTION}" in
-    help) usage; return 0 ;;
-    list)
-      require_podman
-      list_containers
-      return 0
-      ;;
-    remove)
-      require_podman
-      if [[ "${ASSUME_YES}" -ne 1 ]]; then
-        confirm "Delete container ${OPT_NAME} with its home volume" || die "aborted"
-      fi
-      remove_container "${OPT_NAME}"
-      return 0
-      ;;
-    verify)
-      require_podman
-      if [[ -z "${IMAGE}" ]]; then IMAGE="$(default_image)"; fi
-      load_agents
-      verify_containers
-      return 0
-      ;;
-  esac
-
-  require_podman
-  if [[ -z "${IMAGE}" ]]; then IMAGE="$(default_image)"; fi
-  ensure_image
-  load_agents
-
-  if [[ -n "${DECL_FILE}" ]]; then
-    parse_declaration "${DECL_FILE}"
-    collect_ambient_secrets "${C_AGENT[0]}"
-    heading "Summary"
-    show_specs
-  elif [[ -n "${OPT_AGENT}" ]]; then
-    collect_ambient_secrets "${OPT_AGENT}"
-    bulk_specs
-    heading "Summary"
-    show_specs
-  elif [[ -t 0 && -z "${OPT_COUNT}" && -z "${OPT_NAME}" ]]; then
-    interactive_wizard
-  else
-    die "nothing to do: pass --file, or --agent, or run this from a terminal"
-  fi
-
-  if [[ -t 0 && "${ASSUME_YES}" -ne 1 && -z "${DECL_FILE}" && -z "${OPT_AGENT}" ]]; then
-    : # the wizard asked for confirmation already
-  fi
-  if [[ -n "${DECL_FILE}" || -n "${OPT_AGENT}" ]]; then
-    if [[ "${ASSUME_YES}" -ne 1 ]]; then
-      confirm "Create these containers" || die "aborted"
+create_specs() {
+  local index name agent mode workspace
+  for index in "${!SPEC_NAME[@]}"; do
+    name="${SPEC_NAME[index]}"
+    agent="${SPEC_AGENT[index]}"
+    mode="${SPEC_MODE[index]}"
+    workspace="${SPEC_WORKSPACE[index]}"
+    if state_exists "$name"; then
+      warn "container ${name} is already managed; skipping (remove it first to recreate)"
+      continue
     fi
+    if eng_container_exists "$name"; then
+      warn "a container named ${name} already exists outside this installer; skipping"
+      continue
+    fi
+    heading "Creating ${name} (${agent}, ${mode})"
+    if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
+      install -d -m 0755 "$workspace" 2>/dev/null || true
+    fi
+    local -a envs=()
+    local key
+    for key in $(agent_envs_for "$agent"); do
+      [[ -n "${SECRETS[${key}]:-}" ]] && envs+=("${key}=${SECRETS[${key}]}")
+    done
+    if [[ "${#EXTRA_ENVS[@]}" -gt 0 ]]; then
+      envs+=("${EXTRA_ENVS[@]}")
+    fi
+    if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
+      write_env_file "$name" "${envs[@]}"
+    fi
+    create_container_from "$name" "$agent" "$mode" "$workspace" "$IMAGE"
+    ok "created ${name} (agent ${agent}, mode ${mode})"
+  done
+}
+
+wizard_create() {
+  local count index i agent_choice choice name mode workspace key
+  ui_header "New agent containers"
+  count="$(ui_input "How many containers?" "1")"
+  [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge 1 ]] || die "expected a positive number"
+  for ((i = 1; i <= count; i++)); do
+    heading "Container ${i} of ${count}"
+    local -a items=()
+    local a
+    while IFS= read -r a; do
+      items+=("${a} — $(agent_title_of "$a")")
+    done < <(agent_names)
+    choice="$(ui_choose "Agent for container ${i}" "${items[@]}")" || die "cancelled"
+    agent_choice="${choice%% *}"
+    agent_known "$agent_choice" || die "unknown agent '${agent_choice}'"
+    local suggested="${agent_choice}-box"
+    [[ "$i" -gt 1 ]] && suggested="${agent_choice}-box-${i}"
+    name="$(ui_input "Container name" "$suggested")"
+    validate_name "$name" || die "invalid container name '${name}'"
+    choice="$(ui_choose "Lifecycle for ${name}" \
+      "persistent — a running system; state lives in a named volume" \
+      "ephemeral — run the agent once, the container is removed on exit")" || die "cancelled"
+    mode="${choice%% *}"
+    workspace="$(ui_input "Host directory mounted at /workspace" "$(default_workspace "$name")")"
+    for key in $(agent_envs_for "$agent_choice"); do
+      collect_secret "$agent_choice" "$key"
+    done
+    spec_add "$name" "$agent_choice" "$mode" "$workspace"
+  done
+  heading "Summary"
+  show_specs
+  confirm "Create these containers?" || { warn "aborted"; return 0; }
+  create_specs
+}
+
+do_create() {
+  ensure_image "$IMAGE"
+  if [[ -n "$DECL_FILE" ]]; then
+    parse_declaration "$DECL_FILE"
+  elif [[ -n "$OPT_AGENT" || -n "$OPT_NAME" || -n "$OPT_COUNT" ]]; then
+    local agent="${OPT_AGENT:-dsh}" base="${OPT_NAME:-}" count="${OPT_COUNT:-1}" mode="${OPT_MODE:-persistent}" workspace=""
+    agent_known "$agent" || die "unknown agent '${agent}'"
+    [[ -n "$base" ]] || base="${agent}-box"
+    local index name
+    for ((index = 1; index <= count; index++)); do
+      if [[ "$count" -gt 1 ]]; then
+        name="${base}-${index}"
+      else
+        name="${base}"
+      fi
+      validate_name "$name" || die "invalid container name '${name}'"
+      workspace="${OPT_WORKSPACE:-$(default_workspace "$name")}"
+      spec_add "$name" "$agent" "$mode" "$workspace"
+      local key
+      for key in $(agent_envs_for "$agent"); do
+        collect_secret "$agent" "$key"
+      done
+    done
+  elif ui_enabled; then
+    wizard_create
+  else
+    die "nothing to create: pass --agent NAME (and optionally --name/--count), or use --file"
+  fi
+  if [[ "${#SPEC_NAME[@]}" -eq 0 ]]; then
+    warn "no containers were specified"
+    return 0
+  fi
+  show_specs
+  if [[ "${ASSUME_YES:-0}" -eq 0 ]] && [[ -z "$DECL_FILE" ]] && ! ui_enabled; then
+    die "refusing to create without confirmation"
+  fi
+  confirm "Create these containers?" || { warn "aborted"; return 0; }
+  create_specs
+  if [[ -n "$SAVE_FILE" ]]; then
+    save_specs "$SAVE_FILE"
+  fi
+  return 0
+}
+
+# --- TUI -------------------------------------------------------------------
+
+pick_container() {
+  local header="${1}" names=() line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && names+=("$line")
+  done < <(state_list)
+  if [[ "${#names[@]}" -eq 0 ]]; then
+    warn "no containers yet — create one first"
+    return 1
+  fi
+  ui_choose "$header" "${names[@]}"
+}
+
+tui_home() {
+  local choice name target
+  while true; do
+    choice="$(ui_choose "agent-workspace — containers for coding agents" \
+      "Create a container" \
+      "List containers" \
+      "Enter a container (run its agent)" \
+      "Open a shell in a container" \
+      "Show the log of a container" \
+      "Start / restart a container" \
+      "Stop a container" \
+      "Snapshot a container" \
+      "List snapshots" \
+      "Roll a container back" \
+      "Recover a container" \
+      "Fork a container" \
+      "Upgrade a container to a newer image" \
+      "Run the doctor" \
+      "Remove a container" \
+      "Quit")" || return 0
+    case "$choice" in
+      "Create a container") do_create ;;
+      "List containers") cmd_list ;;
+      "Enter a container (run its agent)") name="$(pick_container "Which container?")" && cmd_enter "$name" ;;
+      "Open a shell in a container") name="$(pick_container "Which container?")" && cmd_enter "$name" /bin/bash --login ;;
+      "Show the log of a container") name="$(pick_container "Which container?")" && cmd_logs "$name" ;;
+      "Start / restart a container") name="$(pick_container "Which container?")" && cmd_restart "$name" ;;
+      "Stop a container") name="$(pick_container "Which container?")" && cmd_stop "$name" ;;
+      "Snapshot a container")
+        name="$(pick_container "Which container?")" || continue
+        target="$(ui_input "Label for this snapshot" "manual")"
+        cmd_snapshot "$name" "${target:-manual}"
+        ;;
+      "List snapshots") name="$(pick_container "Which container?")" && cmd_snapshots "$name" ;;
+      "Roll a container back")
+        name="$(pick_container "Which container?")" || continue
+        target="$(ui_input "Snapshot id (enter to use the latest)" "")"
+        cmd_rollback "$name" "$target"
+        ;;
+      "Recover a container") name="$(pick_container "Which container?")" && cmd_recover "$name" ;;
+      "Fork a container")
+        name="$(pick_container "Fork which container?")" || continue
+        target="$(ui_input "Name for the new container" "${name}-fork")"
+        cmd_fork "$name" "$target" "" "" "" ""
+        ;;
+      "Upgrade a container to a newer image")
+        name="$(pick_container "Which container?")" || continue
+        target="$(ui_input "Image" "$(state_get "$name" IMAGE)")"
+        cmd_upgrade "$name" "${target:-$IMAGE}"
+        ;;
+      "Run the doctor") cmd_doctor ;;
+      "Remove a container") name="$(pick_container "Remove which container?")" && cmd_remove "$name" ;;
+      "Quit"|"") return 0 ;;
+    esac
+    printf '\n'
+  done
+}
+
+# --- dispatch --------------------------------------------------------------
+
+need_arg() {
+  [[ "${#ARGS[@]}" -gt 1 ]] || die "'${ARGS[0]}' needs a container name"
+}
+
+dispatch() {
+  local cmd="${ARGS[0]:-}"
+  case "$cmd" in
+    create) do_create ;;
+    list|ls) cmd_list ;;
+    start) need_arg; cmd_start "${ARGS[1]}" ;;
+    stop) need_arg; cmd_stop "${ARGS[1]}" ;;
+    restart) need_arg; cmd_restart "${ARGS[1]}" ;;
+    enter) need_arg; cmd_enter "${ARGS[1]}" ;;
+    shell) need_arg; cmd_enter "${ARGS[1]}" /bin/bash --login ;;
+    logs) need_arg; cmd_logs "${ARGS[1]}" ;;
+    snapshot) need_arg; cmd_snapshot "${ARGS[1]}" "${SNAPSHOT_LABEL:-manual}" ;;
+    snapshots) need_arg; cmd_snapshots "${ARGS[1]}" ;;
+    rollback) need_arg; cmd_rollback "${ARGS[1]}" "${OPT_TO:-}" ;;
+    recover) need_arg; cmd_recover "${ARGS[1]}" ;;
+    fork)
+      [[ "${#ARGS[@]}" -ge 3 ]] || die "fork needs a source and a destination: install.sh fork SRC NEW"
+      cmd_fork "${ARGS[1]}" "${ARGS[2]}" "${OPT_AGENT:-}" "${OPT_MODE:-}" "${OPT_WORKSPACE:-}" "${OPT_FROM:-}"
+      ;;
+    upgrade) need_arg; cmd_upgrade "${ARGS[1]}" "${UPGRADE_IMAGE:-${OPT_TO:-}}" ;;
+    remove|rm) need_arg; shift_args; remove_many ;;
+    doctor) cmd_doctor ;;
+    help) usage ;;
+    *) die "unknown command '${cmd}' (see: install.sh --help)" ;;
+  esac
+}
+
+shift_args() { ARGS=("${ARGS[@]:1}"); }
+
+remove_many() {
+  local name
+  for name in "${ARGS[@]}"; do
+    cmd_remove "$name"
+  done
+}
+
+# --- entry -----------------------------------------------------------------
+
+require_engine() {
+  if [[ -z "$(detect_engines)" ]]; then
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      warn "no container engine found; --dry-run assumes podman"
+      ENGINE="podman"
+      ENGINE_BIN="podman"
+      return 0
+    fi
+    die "neither podman nor docker is installed; install one of them first"
+  fi
+  resolve_engine "${ENGINE_REQUEST:-auto}"
+  msg "engine: ${ENGINE} ($(eng_version))"
+}
+
+parse_args() {
+  while [[ "${#}" -gt 0 ]]; do
+    case "${1}" in
+      --engine) ENGINE_REQUEST="${2}"; shift 2 ;;
+      --engine=*) ENGINE_REQUEST="${1#*=}"; shift ;;
+      --image) IMAGE="${2}"; UPGRADE_IMAGE="${2}"; shift 2 ;;
+      --image=*) IMAGE="${1#*=}"; UPGRADE_IMAGE="${1#*=}"; shift ;;
+      --no-tui) NO_TUI=1; shift ;;
+      --dry-run|-n) DRY_RUN=1; shift ;;
+      --no-pull) NO_PULL=1; shift ;;
+      --yes|-y|--assume-yes) ASSUME_YES=1; shift ;;
+      --quiet|-q) QUIET=1; shift ;;
+      --strict) STRICT=1; shift ;;
+      --keep) SNAPSHOT_KEEP="${2}"; shift 2 ;;
+      --purge-snapshots) PURGE_SNAPSHOTS=1; shift ;;
+      --keep-volume) KEEP_VOLUME=1; shift ;;
+      --follow|-f) LOGS_FOLLOW=1; shift ;;
+      --tail) LOGS_TAIL="${2}"; shift 2 ;;
+      --live) FORK_LIVE=1; shift ;;
+      --label) SNAPSHOT_LABEL="${2}"; shift 2 ;;
+      --to) OPT_TO="${2}"; shift 2 ;;
+      --from) OPT_FROM="${2}"; shift 2 ;;
+      --agent) OPT_AGENT="${2}"; shift 2 ;;
+      --name) OPT_NAME="${2}"; shift 2 ;;
+      --count) OPT_COUNT="${2}"; shift 2 ;;
+      --mode) OPT_MODE="${2}"; shift 2 ;;
+      --workspace) OPT_WORKSPACE="${2}"; shift 2 ;;
+      --env) EXTRA_ENVS+=("${2}"); shift 2 ;;
+      --file) DECL_FILE="${2}"; shift 2 ;;
+      --save) SAVE_FILE="${2}"; shift 2 ;;
+      --list) LEGACY_LIST=1; shift ;;
+      --verify) LEGACY_VERIFY=1; shift ;;
+      --remove) LEGACY_REMOVE=1; shift ;;
+      --help|-h) SHOW_HELP=1; shift ;;
+      --version|-V) printf '%s\n' "agent-workspace installer (image ${IMAGE:-default})"; exit 0 ;;
+      --help-agents) SHOW_AGENTS=1; shift ;;
+      --) shift; ARGS+=("${@}"); break ;;
+      -*) die "unknown option ${1} (see: install.sh --help)" ;;
+      *) ARGS+=("${1}"); shift ;;
+    esac
+  done
+}
+
+main() {
+  parse_args "$@"
+  if [[ "${SHOW_HELP:-0}" -eq 1 ]]; then
+    usage
+    return 0
+  fi
+  [[ -n "$IMAGE" ]] || IMAGE="$(default_image)"
+  AGENT_USER="$(env_value AGENT_USER "${INSTALLER_HOME}/image.env")"
+  AGENT_USER="${AGENT_USER:-agent}"
+
+  if [[ "${SHOW_AGENTS:-0}" -eq 1 ]]; then
+    # the built-in catalogue does not need an engine, and the image catalogue
+    # is only consulted when the image is already present locally
+    load_agents
+    local a
+    while IFS= read -r a; do
+      printf '%-12s %-28s %s\n' "$a" "$(agent_binary_of "$a")" "$(agent_title_of "$a")"
+    done < <(agent_names)
+    return 0
   fi
 
-  local i
-  for ((i = 0; i < ${#C_NAME[@]}; i++)); do
-    create_container "${C_NAME[i]}" "${C_AGENT[i]}" "${C_MODE[i]}" "${C_WORKSPACE[i]}"
-  done
-  if [[ -n "${SAVE_FILE}" ]]; then save_declaration "${SAVE_FILE}"; fi
-  print_hints
+  if [[ "${LEGACY_LIST:-0}" -eq 1 ]]; then
+    require_engine
+    cmd_list
+    return 0
+  fi
+  if [[ "${LEGACY_VERIFY:-0}" -eq 1 ]]; then
+    require_engine
+    cmd_doctor
+    return 0
+  fi
+  if [[ "${LEGACY_REMOVE:-0}" -eq 1 ]]; then
+    require_engine
+    shift_args
+    remove_many
+    return 0
+  fi
+
+  if [[ "${#ARGS[@]}" -eq 0 ]]; then
+    if ! ui_enabled; then
+      usage
+      return 1
+    fi
+    ensure_gum || true
+    if [[ -z "$GUM_BIN" ]]; then
+      usage
+      return 1
+    fi
+    require_engine
+    load_agents
+    tui_home
+    return 0
+  fi
+
+  require_engine
+  load_agents
+  dispatch
 }
 
 main "$@"

@@ -1,18 +1,19 @@
 # agent-workspace
 
-A **declarative, rollback-capable Fedora bootc system container** for running coding
-agents and general-purpose agents. One image describes its whole build, allows every
-part to be switched off, and can be atomically rolled back on any host.
+**Throwaway operating systems for coding agents.** `install.sh` asks a few questions
+and creates containers on your Linux machine - each one a complete, pre-configured
+Fedora bootc OS with the agent you chose inside it.
 
-- **bootc / OCI native** - the OS *is* an image. `bootc switch` to move forward,
-  `bootc rollback` to go back, no reinstall and no package drift.
-- **Declarative** - modules and agents are declared in `config/`, parameters in
-  `image.env`. The build reads those files; you never hand-edit a live machine.
-- **Modular** - nine ordered build modules, each with an on/off switch, each
-  recorded in the image's own manifest.
-- **Batteries included** - podman, git, node, python, the usual shell tooling and
-  a set of agent harnesses, pre-configured and ready to run rootless.
-- **MIT licensed** - the build, the configuration and the CLI are yours to fork.
+- **One entry point** - `./install.sh`, an interactive TUI. No manifest to write, no
+  `docker run` incantation to memorise, no root required.
+- **A whole OS per agent** - its own PID 1, systemd, users, package database and
+  SELinux policy, so `dnf install`, `npm install -g` or a stray `rm -rf` stays inside.
+- **Snapshots and rollback** - commit a container, roll back to it, recover it after an
+  accident, or fork it into a second one: [docs/rollback.md](docs/rollback.md).
+- **Declarative build** - the image is described by `image.env`, `config/modules.conf`
+  and `config/agents.conf`; modules and agents have on/off switches, and the image
+  records what it contains in its own manifest.
+- **MIT licensed** - the build, the configuration and the installer are yours to fork.
 
 ~~~text
 ghcr.io/wraindrock/agent-workspace:latest
@@ -20,81 +21,78 @@ ghcr.io/wraindrock/agent-workspace:latest
 
 ## Quick start
 
-### On a bootc-capable machine (recommended)
+~~~bash
+git clone https://github.com/wraindrock/agent-workspace
+cd agent-workspace
+./install.sh
+~~~
+
+The TUI asks which agent goes into the container, what to call it, whether it should be
+**persistent** (systemd, keeps its home volume across restarts) or **ephemeral** (run
+once, then gone), which host directory to mount at `/workspace`, and once for the
+credential that agent needs. Then it creates the container and tells you how to enter it.
+
+~~~bash
+./install.sh list              # what this host already has
+./install.sh enter dsh-box     # run the agent inside its own OS
+./install.sh --help            # every subcommand, including non-interactive use
+~~~
+
+Nothing else in this repository is needed to *use* the project. The rest of this README
+covers building your own image and what is inside it; the container reference is
+[docs/containers.md](docs/containers.md).
+
+### Without the installer
+
+The same image is still a fine plain sandbox for a single throwaway run:
+
+~~~bash
+podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
+  ghcr.io/wraindrock/agent-workspace:latest dsh
+~~~
+
+Run it rootless (`podman`, not `sudo podman`) so everything the agent writes into
+`/workspace` belongs to your user. The installer does that for you: a named volume
+holds `/home/agent` and your chosen host directory is mounted at `/workspace`.
+
+### On a bootc-capable machine (advanced, optional)
+
+The image is a bootc image, so it can also become the OS of a machine you own:
 
 ~~~bash
 sudo bootc switch --transport registry ghcr.io/wraindrock/agent-workspace:latest
 sudo systemctl reboot
 ~~~
 
-After the reboot, `agent-workspace` is on `PATH`:
+That is a different use case from the one this project is built around: the container
+lifecycle commands below do not apply to a machine installed this way. Inside any
+running instance the image's own CLI reports what it is:
 
 ~~~bash
 agent-workspace version      # what this image is
 agent-workspace manifest     # how it was built, module by module
 agent-workspace doctor       # is the running system what the image promised?
-agent-workspace rollback     # undo, atomically, whenever you want
 ~~~
 
-### As an isolated agent sandbox
-
-This is a **complete operating system**, not a slim app image: Fedora bootc with
-its own PID 1, systemd, users, package database and SELinux policy. Run it under
-podman and every agent gets a whole OS of its own - an `npm install -g`, a
-`dnf install`, a stray `rm -rf` or a broken config stays inside that container:
+The default image ships two harnesses, DSH and OpenCode:
 
 ~~~bash
 # one agent, one OS, your code mounted at /workspace
-podman run --rm -it \
-  -v "$PWD:/workspace:z" --workdir /workspace \
+podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
   ghcr.io/wraindrock/agent-workspace:latest dsh
 
-# the default image ships two harnesses; the other one is opencode
+# the other bundled harness
 podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
   ghcr.io/wraindrock/agent-workspace:latest opencode
 
-# drop the mount and the agent gets a fully disposable filesystem
-podman run --rm -it --entrypoint /bin/bash \
-  ghcr.io/wraindrock/agent-workspace:latest
-~~~
-
-Run **rootless** (`podman`, not `sudo podman`): container root is then your own
-user on the host, so everything the agent writes into `/workspace` belongs to
-you. On a booted system the image additionally creates the unprivileged `agent`
-user on first boot.
-
-From a clone of this repository the same command is one recipe:
-
-~~~bash
-just build                # build the image locally
-just sandbox              # run dsh against $PWD, in a throwaway OS
-just sandbox opencode     # the other bundled harness
-just sandbox /bin/bash    # just a shell inside the sandbox
-~~~
-
-Want systemd and the full OS running in the sandbox? Leave the default entrypoint
-and exec into it:
-
-~~~bash
-podman run -d --name agent-box -v "$PWD:/workspace:z" \
+# systemd is PID 1, so a detached container can be entered like a machine
+podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
   ghcr.io/wraindrock/agent-workspace:latest
 podman exec -it agent-box /bin/bash
 ~~~
 
-Lifecycle commands (`switch`, `rollback`, `update`, `pin`) detect that they are
-inside a container and refuse politely instead of half-working.
-
-### Install from an ISO or VM image
-
-Download a qcow2 or Anaconda ISO from the latest
-[build-disk workflow](https://github.com/wraindrock/agent-workspace/actions/workflows/build-disk.yml)
-run, boot it, and the installer lays down the same image. Build your own with:
-
-~~~bash
-just build-qcow2   # ./output/*.qcow2
-just build-iso     # ./output/*.iso
-just run-vm        # boot the qcow2 in qemu
-~~~
+On first boot inside any instance, the image creates the unprivileged `agent` user
+that owns the agent workspace (see [First boot](#first-boot)).
 
 ## What "declarative" means here
 
@@ -157,19 +155,20 @@ manifest, so tooling offers exactly the agents a build contains.
 
 Adding your own is a small shell function - see [docs/agents.md](docs/agents.md).
 
-## Containers on your host
+## Managing containers
 
-`install.sh` in the repository root turns the image into real containers: it
-creates as many as you want, asks which agent each one runs, and keeps every
-credential in its own file.
+The installer is the interface - interactive, or one subcommand per action:
 
 ~~~bash
-./install.sh                              # wizard: how many, named what, which agent
-./install.sh --list                       # what this host already has
-./install.sh --file containers.conf --dry-run
+./install.sh create --agent dsh --name dsh-box --workspace "$PWD"
+./install.sh list
+./install.sh snapshot dsh-box --label before-refactor
+./install.sh rollback dsh-box
+./install.sh fork dsh-box dsh-experiment
+./install.sh doctor --strict
 ~~~
 
-The same thing can be written down:
+A whole set can be declared in a file and created non-interactively:
 
 ~~~
 # name       agent     lifecycle   workspace
@@ -177,28 +176,31 @@ review-box   dsh       persistent  ~/work/review
 scratch      opencode  ephemeral
 ~~~
 
-`persistent` containers run systemd, keep `/home/agent` in a named volume and
-survive reboots (`podman exec -it review-box bash -lc dsh` to step in);
-`ephemeral` ones run a single command and are removed on exit. The agent menu is
-read from the image manifest, so it always matches the build. Full reference:
-[docs/containers.md](docs/containers.md).
-
-## Rollback, switching and pinning
-
-Every change to this image is a new deployment, and every deployment keeps its
-predecessor:
-
 ~~~bash
-agent-workspace update            # stage the newest build of your tag
-sudo systemctl reboot            # boot it
-agent-workspace rollback         # back to the previous deployment
-agent-workspace switch 20261013  # move to a dated build
-agent-workspace pin              # freeze this machine to the booted digest
-agent-workspace pin --clear      # unfreeze
+./install.sh create --file containers.conf --dry-run   # show the engine commands only
+./install.sh create --file containers.conf --save saved.conf
 ~~~
 
-`:previous` is published alongside `:latest` on every release, so an operator can
-also move a fleet backwards with a single tag. Details and failure drills:
+`persistent` containers run systemd, keep `/home/agent` in a named volume and survive
+reboots; `ephemeral` ones run one command and are removed on exit. The agent menu is
+read from the image's own manifest, so it always matches the build. Full reference:
+[docs/containers.md](docs/containers.md).
+
+## Snapshots, rollback and forks
+
+The unit of rollback is the container, not your host system:
+
+~~~bash
+./install.sh snapshot dsh-box              # commit the filesystem, archive /home/agent
+./install.sh rollback dsh-box              # back to the latest snapshot (or --to ID)
+./install.sh recover dsh-box               # restart, restore or rebuild a lost container
+./install.sh fork dsh-box dsh-experiment   # branch a second container off the first
+./install.sh upgrade dsh-box --image ghcr.io/wraindrock/agent-workspace:latest
+~~~
+
+`upgrade` takes a `pre-upgrade` snapshot first, so a bad image is one `rollback` away;
+`fork` snapshots its source first for the same reason, unless you pass `--live`.
+Retention, exact semantics and what is *not* covered:
 [docs/rollback.md](docs/rollback.md).
 
 ## Verifying the image
@@ -227,28 +229,28 @@ just build     # build the image with podman
 just verify    # build + container self test
 ~~~
 
-Requirements: `podman` and `just`. The lint uses `shellcheck`, `actionlint` and
-`jq` when they are present and skips them when they are not; CI installs all
-three. It runs the same `tests/lint.sh`, `tests/install.sh` and `tests/smoke.sh`
-on every pull request, so nothing is "only tested on my machine".
+Requirements: `podman` (or `docker`) and `just`, plus `bash` 4.4+ for `install.sh`.
+The lint uses `shellcheck`, `actionlint` and `jq` when they are present and skips them
+when they are not; CI installs all three. It runs the same `tests/lint.sh`,
+`tests/install.sh` and `tests/smoke.sh` on every pull request, so nothing is "only
+tested on my machine".
 
 ## Repository layout
 
 ~~~text
-Containerfile            the build contract: context stage + image stage
+install.sh               the one entry point: TUI for creating agent containers
+installer/lib/           engine.sh, state.sh, ui.sh, agents.sh, commands.sh
 image.env                image identity and build parameters
-Justfile                 local build, sandbox, verification and disk-image recipes
-install.sh               host installer: named agent containers from the image
+Containerfile            the build contract: context stage + image stage
+Justfile                 local build, image check and release helpers
 build_files/
   build.sh               the module pipeline
   lib/common.sh          shared build helpers
   modules/<NN-name>/      one module per concern, each with module.env + install.sh
 config/                  modules.conf, agents.conf - the declarative switches
 system_files/            verbatim overlay copied to / (systemd, sysctl, profile.d)
-runtime/                 the in-image agent-workspace CLI
-scripts/                 host-side switch / rollback / doctor / cosign helpers
-disk_config/             disk layout and installer customisation
-tests/                   lint.sh, smoke.sh, install.sh
+runtime/                 the in-image agent-workspace CLI (version, manifest, doctor)
+tests/                   lint.sh, smoke.sh, install.sh + a fake engine fixture
 docs/                    architecture, modules, agents, containers, rollback
 ~~~
 
@@ -272,8 +274,12 @@ shows up in `journalctl` instead of in a broken agent session.
   desktop). Desktop users can switch `BASE_IMAGE` to `ghcr.io/ublue-os/bluefin:stable`
   or `ghcr.io/ublue-os/aurora:stable`; minimalists can use
   `quay.io/fedora/fedora-bootc:44`.
-- Disk-image builds and local VM runs need root and KVM; CI handles them in the
-  `build-disk` workflow.
+- Containers are isolated from each other and from your host, but they share the
+  host kernel. They are not virtual machines.
+- The agent inside a container runs with your user's privileges on this host through
+  rootless podman or docker; that is the whole point, and it is also the boundary.
+- `docker` needs `--privileged --cgroupns=host` for the image's systemd to be PID 1.
+  The installer adds those flags for you; prefer `podman` when you have the choice.
 
 ## Contributing
 

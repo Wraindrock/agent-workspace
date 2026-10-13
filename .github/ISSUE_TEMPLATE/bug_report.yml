@@ -22,10 +22,10 @@ body:
     attributes:
       label: Where does it fail?
       options:
-        - Deployed system (booted agent-workspace host)
-        - Running as a plain container
+        - install.sh (creating, listing or removing containers)
+        - Container lifecycle (snapshot, rollback, recover, fork, upgrade)
+        - A running agent container (the agent, or the system inside it)
         - Image build (CI or `just build`)
-        - Disk image build (qcow2 / ISO)
         - Documentation
     validations:
       required: true
@@ -53,8 +53,8 @@ body:
   - type: textarea
     id: rollback
     attributes:
-      label: Rollback state
-      description: Did `agent-workspace rollback` recover the machine? This tells us whether the failure is in a deployment or in the image.
+      label: Snapshot and rollback state
+      description: Output of `./install.sh snapshots <name>`. Did `./install.sh rollback <name>` recover it? This tells us whether the failure is in the image or in what the agent did to the container.
       render: shell
     validations:
       required: false

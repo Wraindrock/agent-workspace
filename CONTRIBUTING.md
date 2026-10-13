@@ -37,9 +37,9 @@ bash tests/smoke.sh localhost/agent-workspace:dev
 gracefully: `shellcheck`, `actionlint`, `just`, `jq` and `pyyaml` are used when
 present, skipped when not. Documentation counts as part of a change: the lint
 fails when a required doc file is missing, so keep the module and agent tables in
-`README.md` and `docs/` matching the code. `tests/install.sh` drives `install.sh` against a fake
-`podman`, so the host installer is covered in CI without a container engine or
-root. The build workflow installs the pinned `actionlint`
+`README.md` and `docs/` matching the code. `tests/install.sh` drives `install.sh` against the fake container engine in
+`tests/fixtures/fake-engine.sh`, so the host installer is covered in CI without
+podman, docker or root. The build workflow installs the pinned `actionlint`
 and `just`, so a workflow edit that uses an unavailable context - or a Justfile
 that no longer parses - fails in CI before any build.
 

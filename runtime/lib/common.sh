@@ -18,15 +18,10 @@ require_root() {
   [[ "$(id -u)" -eq 0 ]] || die "this command must run as root (try: sudo agent-workspace $*)"
 }
 
-# is_container reports whether we are running as a plain container rather than
-# as a booted system container. Rollback/switch only make sense in the latter.
+# is_container reports whether we are running inside the sandbox container,
+# which is the only way this image is meant to run.
 is_container() {
   [[ -f /run/.containerenv || -f /.dockerenv ]]
-}
-
-# has_bootc reports whether bootc is present and talking to a booted system.
-has_bootc() {
-  have bootc && [[ -d /sysroot ]]
 }
 
 load_env() {
@@ -46,12 +41,6 @@ image_ref() {
 image_version() {
   load_env
   printf '%s' "${AGENT_WORKSPACE_VERSION:-unknown}"
-}
-
-pinned_digest() {
-  local file="${PinnedDigestFile:-/etc/agent-workspace/pinned-digest}"
-  [[ -r "$file" ]] && tr -d '[:space:]' < "$file"
-  return 0
 }
 
 # agent_binaries_for prints the executable(s) a declared harness exposes.

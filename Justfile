@@ -10,12 +10,7 @@ image_logo_url := env_var("IMAGE_LOGO_URL")
 image_license := env_var("IMAGE_LICENSE")
 default_tag := env_var("DEFAULT_TAG")
 base_image := env_var("BASE_IMAGE")
-bib_image := env_var("BIB_IMAGE")
 agent_user := env_var("AGENT_USER")
-
-alias build-vm := build-qcow2
-alias rebuild-vm := rebuild-qcow2
-alias run-vm := run-vm-qcow2
 
 # List recipes
 default:
@@ -31,7 +26,7 @@ check:
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-# Build the bootc image locally
+# Build the container image locally (podman build)
 [group('Build')]
 build $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
@@ -60,7 +55,7 @@ build $target_image=image_name $tag=default_tag:
       --file Containerfile \
       .
 
-# Boot the built image as a plain container and run the self test
+# Boot the built image as a system container and run the self test
 [group('Build')]
 smoke $target_image=image_name $tag=default_tag:
     bash tests/smoke.sh "${target_image}:${tag}"
@@ -70,28 +65,11 @@ smoke $target_image=image_name $tag=default_tag:
 verify $target_image=image_name $tag=default_tag: (build target_image tag) && (smoke target_image tag)
 
 # ---------------------------------------------------------------------------
-# Sandbox - run a whole OS in a container to isolate an agent run
+# Containers - the only way this project is used
 # ---------------------------------------------------------------------------
-# Run the image as a disposable agent sandbox, $PWD mounted at /workspace.
-#   just sandbox                 -> dsh
-#   just sandbox opencode        -> the other bundled harness
-#   just sandbox /bin/bash       -> just a shell inside the sandbox
-[group('Sandbox')]
-sandbox agent="dsh" dir="." $target_image=image_name $tag=default_tag:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    # rootless podman maps the container's root to the calling user, so
-    # everything the agent writes into /workspace stays owned by you.
-    exec podman run --rm -it \
-      --hostname agent-sandbox \
-      --volume "${dir}:/workspace:z" \
-      --workdir /workspace \
-      "${target_image}:${tag}" "${agent}"
-
-# Create agent containers on this host with the interactive installer.
-# Flags reach install.sh after --, e.g. "just install -- --list".
-[group('Sandbox')]
+# Create and manage agent containers on this host, in the installer's TUI
+# Create with: just install -- --list (see docs/containers.md)
+[group('Containers')]
 install *args:
     ./install.sh {{args}}
 
@@ -153,80 +131,6 @@ push $target_image=image_name $tag=default_tag:
     podman push "${target_image}:${tag}" "${registry}/${image_name}:${tag}"
 
 # ---------------------------------------------------------------------------
-# Declarative lifecycle - runs on the deployed host, not in CI
-# ---------------------------------------------------------------------------
-# Print bootc deployment status (booted / staged / rolled back)
-[group('Lifecycle')]
-status:
-    sudo bash scripts/switch.sh --status
-
-# Move this machine to another published tag of agent-workspace
-[group('Lifecycle')]
-switch tag=default_tag:
-    sudo bash scripts/switch.sh "${tag}"
-
-# Revert to the previously booted deployment (transactional, offline)
-[group('Lifecycle')]
-rollback:
-    sudo bash scripts/rollback.sh
-
-# Verify the running system matches the image it claims to be
-[group('Lifecycle')]
-doctor:
-    bash scripts/doctor.sh
-
-# ---------------------------------------------------------------------------
-# Disk images (bootc-image-builder)
-# ---------------------------------------------------------------------------
-# Build a bootable qcow2 from the published image
-[group('Disk images')]
-build-qcow2 $target_image=image_name $tag=default_tag:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    sudo podman run --rm -it --privileged --pull=newer \
-      --security-opt label=type:unconfined_t \
-      --volume "$PWD/output:/output" \
-      --volume /var/lib/containers/storage:/var/lib/containers/storage \
-      --volume "$PWD/disk_config/disk.toml:/config.toml:ro" \
-      "${bib_image}" \
-      --type qcow2 --use-librepo=True --rootfs btrfs \
-      "ghcr.io/${repo_organization,,}/${image_name}:${tag}"
-
-# Build an installable ISO from the published image
-[group('Disk images')]
-build-iso $target_image=image_name $tag=default_tag:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    sudo podman run --rm -it --privileged --pull=newer \
-      --security-opt label=type:unconfined_t \
-      --volume "$PWD/output:/output" \
-      --volume /var/lib/containers/storage:/var/lib/containers/storage \
-      --volume "$PWD/disk_config/iso.toml:/config.toml:ro" \
-      --volume "$PWD/disk_config/disk.toml:/disk.toml:ro" \
-      "${bib_image}" \
-      --type anaconda-iso --use-librepo=True --rootfs btrfs \
-      "ghcr.io/${repo_organization,,}/${image_name}:${tag}"
-
-# Rebuild the qcow2 from scratch (cleans output/ first)
-[group('Disk images')]
-rebuild-qcow2: clean (build-qcow2)
-
-# Rebuild the ISO from scratch (cleans output/ first)
-[group('Disk images')]
-rebuild-iso: clean (build-iso)
-
-# Run the qcow2 produced by build-qcow2 in a throwaway VM
-[group('Disk images')]
-run-vm-qcow2 ram="6G":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    disk="$(find output -name '*.qcow2' | head -n1)"
-    [[ -n "${disk}" ]] || { echo "no qcow2 in output/, run 'just build-qcow2' first" >&2; exit 1; }
-    qemu-system-x86_64 -enable-kvm -m "${ram}" -cpu host -smp 4 \
-      -drive "file=${disk},if=virtio,format=qcow2" \
-      -device virtio-vga -netdev user,id=net0,hostfwd=tcp::2222-:22 -device virtio-net-pci,netdev=net0
-
-# ---------------------------------------------------------------------------
 # Maintenance
 # ---------------------------------------------------------------------------
 # Generate a cosign key pair for key-based image signing
@@ -239,5 +143,5 @@ cosign-keygen name="agent-workspace":
 clean:
     #!/usr/bin/env bash
     set -euo pipefail
-    rm -rf output output.env _build* *_chunkah_* *_rpm-ostree_*
+    rm -rf output output.env _build* *_chunkah_*
     echo "cleaned"

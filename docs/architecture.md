@@ -1,8 +1,13 @@
 # Architecture
 
-agent-workspace is a *system container*: an OCI image that is also a bootable
-operating system. The same artifact is a container you can `podman run` and a
-machine you can `bootc switch` to. Everything below follows from that duality.
+agent-workspace is a *system container*: an OCI image that is also a complete
+operating system. A container started from it has its own PID 1, systemd, users,
+package database and SELinux policy, so one container is one machine dedicated to
+one agent. That is the whole point: whatever an agent installs, breaks, or fills
+up stays inside a container you can delete.
+
+The image is a bootc image as well, so it can also be installed on hardware. That
+is a supported but secondary path; everything below assumes the container.
 
 ## The build contract
 
@@ -87,21 +92,23 @@ deployed machine can always explain itself:
 agent-workspace manifest | jq '.modules, .agents, .agentCatalog'
 ~~~
 
-and `agent-workspace doctor --strict` can fail when the running system no longer
+and `agent-workspace doctor --strict` can fail when the running container no longer
 matches that declaration.
 
 ## Layering: what goes where
 
-| Layer | Contents | Survives image update? | Writable at runtime? |
+| Layer | Contents | Survives `install.sh upgrade`? | Writable at runtime? |
 | --- | --- | --- | --- |
-| container image (ostree) | everything the modules install | replaced by the new deployment | no |
-| `/etc` | `/etc/agent-workspace/config.env`, operator config | yes, three-way merged | yes |
-| `/var` | caches, container storage, `/var/lib/agent-workspace` | untouched by updates | yes |
-| `/usr/local` | `uv`, pipx-installed binaries, manual installs | yes for `/usr/local` on bootc systems | yes |
+| image layer (ostree) | everything the modules install | no: the new image replaces it | no |
+| container layer | `/etc`, `/var` and `/usr/local` - whatever the agent installed or edited while running | no (capture it with `install.sh snapshot` first) | yes |
+| named volume | `/home/agent`, the agent's home | yes: the volume outlives the container | yes |
+| host bind mount | the directory you passed as `--workspace`, mounted at `/workspace` | entirely the host's business | yes |
 
-The practical rule: **declaration lives in the image, state lives in `/var`,
-operator overrides live in `/etc`.** Anything a module installs must land in the
-image; anything that changes per machine must land in `/etc` or `/var`.
+The practical rule: **declaration lives in the image, the agent's own state lives
+in its home volume and the container layer, and the code lives on the host.**
+Anything a module installs must land in the image; anything the agent produces
+should land in `/home/agent` or `/workspace`, which are the two things a
+`snapshot`, a `rollback` and a `fork` actually carry.
 
 ## Runtime components
 
@@ -110,9 +117,8 @@ image; anything that changes per machine must land in `/etc` or `/var`.
 | `agent-workspace` | `/usr/bin/agent-workspace` | dispatcher for all subcommands |
 | `common.sh` | `/usr/lib/agent-workspace/` | shared helpers sourced by the dispatcher and its subcommands |
 | `cmd-info.sh` | `/usr/lib/agent-workspace/` | `version`, `manifest`, `modules`, `agents` |
-| `cmd-status.sh` | `/usr/lib/agent-workspace/` | bootc deployment status, container detection |
+| `cmd-status.sh` | `/usr/lib/agent-workspace/` | instance identity: container vs booted system, image, agent user, harnesses |
 | `cmd-doctor.sh` | `/usr/lib/agent-workspace/` | declaration-vs-reality checks |
-| `cmd-lifecycle.sh` | `/usr/lib/agent-workspace/` | `switch`, `rollback`, `update`, `pin` |
 | `firstboot.sh` | `/usr/lib/agent-workspace/` | one-shot machine provisioning |
 
 The CLI sources its libraries from `${AGENT_WORKSPACE_LIB:-/usr/lib/agent-workspace}`,
@@ -124,10 +130,10 @@ AGENT_WORKSPACE_LIB="$PWD/runtime/lib" ./runtime/bin/agent-workspace version
 
 ### Container vs booted system
 
-`is_container()` checks `/run/.containerenv` and `/.dockerenv`; `has_bootc()`
-checks `bootc` on `PATH` **and** `/sysroot` being a mount point. Every lifecycle
-command calls both before doing anything, so the same binary is safe in CI
-containers, in `podman run` sessions, and on a booted host.
+`is_container()` checks `/run/.containerenv` and `/.dockerenv`, and
+`agent-workspace status` reports the answer as `mode: container` or `mode: process`.
+The same binary is therefore safe in CI containers, in `podman run` sessions,
+and on a booted host - it reports what it is instead of assuming.
 
 ## System integration
 
@@ -157,33 +163,59 @@ why the module pipeline can assume `dnf5` and `bootc` exist.
 
 ## The host installer
 
-`install.sh` at the repository root is the other half of the contract. It runs on
-the *host* - it never enters the image - and turns one published image into several
-independent agent containers:
+`install.sh` at the repository root is the other half of the contract, and the
+supported entry point of the whole project. It runs on the *host*, never enters the
+image, and turns one published image into independent agent containers:
 
 ~~~bash
-./install.sh                  # interactive wizard
-./install.sh --file boxes.conf --yes
-./install.sh --list
+./install.sh                        # interactive TUI
+./install.sh create --file boxes.conf --yes
+./install.sh list
+./install.sh snapshot dsh-box --label before-refactor
 ~~~
+
+It is split the same way the image build is: `install.sh` parses arguments and
+dispatches, and one library per concern does the work.
+
+| Library | Role |
+| --- | --- |
+| `installer/lib/ui.sh` | the gum TUI, with a plain-`read` fallback when gum is missing or there is no terminal |
+| `installer/lib/engine.sh` | podman/docker detection, the per-engine run flags, and a dry-run mode that prints commands instead of running them |
+| `installer/lib/state.sh` | where host state lives: `meta`, snapshots, and credential files |
+| `installer/lib/agents.sh` | the agent catalog, read from the image manifest and merged over the built-in table |
+| `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `enter`, `logs`, `snapshot`, `rollback`, `recover`, `fork`, `upgrade`, `remove`, `doctor` |
 
 | Decision | Made by |
 | --- | --- |
+| which engine | `--engine podman|docker`, otherwise podman if both are present |
 | which image | `--image` (default taken from `image.env`) |
-| how many containers, and their names | the wizard, `--count`, `--name`, or a declaration file |
+| how many containers, and their names | the TUI, `--name`, `--count`, or a declaration file |
 | which agent each container runs | the agent catalog in the image manifest, falling back to the built-in `dsh` and `opencode` table |
 | persistent or ephemeral | `--mode persistent|ephemeral` |
 | credentials | a `0600` env file per container under `~/.config/agent-workspace/containers/` |
+| host state | `~/.local/share/agent-workspace/` (per-container `meta` plus snapshot archives) |
 
 Every container it creates carries the labels `agent-workspace.manager=install.sh`,
-`agent-workspace.agent` and `agent-workspace.mode`, so `--list`, `--verify` and
-`--remove` only ever touch containers this installer owns. See `docs/containers.md`.
+`agent-workspace.agent` and `agent-workspace.mode`, so `list`, `doctor` and
+`remove` only ever touch containers this installer owns.
+
+### Rollback lives on the host, not in the image
+
+A snapshot commits the container's filesystem into a local image
+(`agent-workspace/snapshot-<name>:<id>`) and archives `/home/agent` into
+`~/.local/share/agent-workspace/snapshots/<name>/<id>/home.tar.gz`. `rollback`
+recreates the container from that snapshot; `recover` starts, restores, or rebuilds
+a container that is missing; `fork` copies a container into a second one; and
+`upgrade` takes a `pre-upgrade` snapshot before it pulls anything, so a bad image
+is one `rollback` away. None of this touches the host system. The full semantics
+are in `docs/rollback.md`.
 
 ## Deliberate non-goals
 
 - **No configuration management at runtime.** If something must be true for every
   machine, it belongs in a module, not in a first-boot script.
-- **No package drift.** `dnf` works on a booted system for experimentation, but
-  the next deployment replaces it; the image is the only durable place.
+- **No package drift.** `dnf` works inside a running container for
+  experimentation, but the next `install.sh upgrade` replaces it; the image is
+  the only durable place.
 - **No copied upstream scaffolding.** The pipeline is written for this project so
   that the whole repository can carry one licence (MIT).

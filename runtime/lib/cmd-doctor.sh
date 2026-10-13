@@ -2,7 +2,7 @@
 # Verify that the running system matches the image declaration.
 #
 #   --quiet    only report problems
-#   --offline  skip checks that need the network or a booted system
+#   --offline  skip checks that need systemd or the network
 #   --strict   exit non-zero when any check fails
 
 cmd_doctor() {
@@ -28,7 +28,7 @@ cmd_doctor() {
 
   # 1. declared toolchain ---------------------------------------------------
   local binary
-  for binary in bootc podman git node npm python3 gh jq curl; do
+  for binary in podman git node npm python3 gh jq curl; do
     if have "$binary"; then
       report_ok "$binary present"
     else
@@ -71,19 +71,6 @@ cmd_doctor() {
       report_ok "health timer active"
     else
       report_fail "health timer inactive"
-    fi
-  fi
-
-  # 5. bootc deployment -----------------------------------------------------
-  if [[ "$offline" -eq 0 ]] && ! is_container; then
-    if has_bootc; then
-      if bootc status >/dev/null 2>&1; then
-        report_ok "bootc reports a healthy deployment"
-      else
-        report_fail "bootc status failed"
-      fi
-    else
-      report_fail "bootc unavailable on a booted system"
     fi
   fi
 

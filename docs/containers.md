@@ -1,124 +1,155 @@
 # Containers on your host
 
-The published image is a complete operating system, so the fastest way to use it
-is a container: one OS per agent, isolated from your workstation. `install.sh` in
-the repository root creates those containers for you - interactively or from a
-declaration file - and keeps each container's credentials in its own private
-environment file.
+This project has exactly one supported way to be used: you run `./install.sh` on a
+Linux machine, it walks you through a TUI, and it creates containers on that machine.
+Each container is a complete operating system with a pre-configured agent inside it,
+isolated from your workstation and from every other container.
+
+```bash
+git clone https://github.com/wraindrock/agent-workspace && cd agent-workspace
+./install.sh
+```
+
+The installer is the whole interface: creating, entering, snapshotting, rolling back,
+recovering, forking, upgrading and removing containers. It never needs root.
 
 ## Requirements
 
-* `podman` (rootless is the recommended setup; the installer never needs sudo)
-* `bash` 4 or newer
-* an image that can be pulled - `ghcr.io/wraindrock/agent-workspace:latest` by default
+* `podman` or `docker` - rootless podman is the recommended setup (`docker` is
+  supported by using a privileged container with its own cgroups namespace)
+* `bash` 4.4 or newer
+* an image that can be pulled - `ghcr.io/wraindrock/agent-workspace:latest` unless
+  `image.env` or `--image` says otherwise
+* optional: `gum` for the nicer TUI. It is downloaded on first use when missing;
+  without it every prompt falls back to plain `read` questions.
 
-## Quick start
+## The TUI
+
+Running `./install.sh` with no arguments opens a menu:
+
+```
+Create a container
+List containers
+Enter a container (run its agent)
+Open a shell in a container
+Show the log of a container
+Start / restart a container
+Stop a container
+Snapshot a container
+List snapshots
+Roll a container back
+Recover a container
+Fork a container
+Upgrade a container to a newer image
+Run the doctor
+Remove a container
+Quit
+```
+
+The create flow asks for the agent, the container name, the lifecycle (persistent or
+ephemeral), the host workspace directory, and the credential the agent needs. Pass
+`--no-tui` to refuse to prompt, which is what scripts and CI want.
+
+## Lifecycles
+
+`persistent` (the default) starts a detached container whose PID 1 is systemd and
+whose `/home/agent` is a named volume, so the agent's state survives restarts:
+
+```bash
+./install.sh enter dsh-box     # start the agent inside the container
+./install.sh shell dsh-box     # get a login shell instead
+./install.sh stop dsh-box      # stop it without deleting it
+./install.sh start dsh-box     # bring it back
+```
+
+Under podman the container is created with `--systemd=always --restart unless-stopped`.
+Under docker it needs `--privileged --cgroupns=host`, a read-write
+`/sys/fs/cgroup` mount and tmpfs mounts for `/run` and `/tmp`, because the image
+boots a real init system.
+
+`ephemeral` runs the agent once and throws the container away when it exits
+(`--rm`); the installer still records it so `list`, `logs` and `doctor` know about it.
+
+## Non-interactive use
+
+Every TUI action has a subcommand:
 
 ~~~bash
-./install.sh                # interactive wizard
-./install.sh --list         # what this host already has
-./install.sh --help         # every option
-~~~
+./install.sh create --agent dsh --name dsh-box --workspace "$PWD"   # one container
+./install.sh create --agent opencode --name box --count 2           # box-1, box-2
+./install.sh list                                                   # what this host has
+./install.sh snapshot dsh-box --label before-refactor --keep 10
+./install.sh snapshots dsh-box
+./install.sh rollback dsh-box --to 20260113T090000Z
+./install.sh recover dsh-box
+./install.sh fork dsh-box dsh-fork --agent opencode
+./install.sh upgrade dsh-box --image ghcr.io/wraindrock/agent-workspace:latest
+./install.sh remove dsh-box --purge-snapshots
+./install.sh doctor --strict
+./install.sh --help
+```
 
-The wizard asks how many containers you want. For each one it asks:
-
-| Question | Meaning |
-| --- | --- |
-| agent | which harness inside the image the container starts: `dsh`, `opencode`, ... |
-| name | container name, and the prefix of its volume and env file (`dsh-box` by default) |
-| lifecycle | `persistent` (systemd, survives reboots) or `ephemeral` (one-shot, removed on exit) |
-| workspace | host directory bind-mounted at `/workspace` |
-| credentials | the API key the chosen agent needs, when it is not already in your environment |
-
-The agent list comes from the image itself: `manifest.json` inside the image carries
-an `agentCatalog`, so the menu offers exactly what that build ships. When the image
-cannot be inspected, the installer falls back to a small built-in table.
-
-## The two lifecycles
-
-`persistent` starts a detached container with systemd as PID 1 and a named volume
-for `/home/agent`:
-
-~~~bash
-podman exec -it dsh-box bash -lc 'dsh'   # step into the running container
-podman stop dsh-box                      # stop it without deleting it
-podman start dsh-box                     # bring it back
-~~~
-
-`ephemeral` runs one command and drops the container when it exits:
-
-~~~bash
-podman run --rm -it --volume "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest opencode
-~~~
+Global options: `--engine auto|podman|docker`, `--image REF`, `--no-tui`,
+`--dry-run` (print the engine commands instead of running them), `--no-pull`,
+`--yes`, `--quiet`.
 
 ## Declarative containers
 
-Everything the wizard does can be written down, which makes a set of containers
-reproducible on another machine:
+A set of containers can be written down, which makes it reproducible on another host:
 
-~~~bash
-cat > containers.conf <<'EOF'
+```
 # name       agent     lifecycle   workspace
 review-box   dsh       persistent  ~/work/review
 scratch      opencode  ephemeral
-EOF
+```
 
-./install.sh --file containers.conf                 # create them
-./install.sh --file containers.conf --dry-run       # print the podman commands only
-./install.sh --file containers.conf --save saved.conf
-~~~
+```bash
+./install.sh create --file containers.conf               # create them
+./install.sh create --file containers.conf --dry-run     # only show the commands
+./install.sh create --file containers.conf --save saved.conf
+```
 
-Blank lines and `#` comments are ignored; fields are separated by whitespace and
-`mode` and `workspace` may be omitted (defaults: `persistent` and
-`~/agent-workspace/<name>`). Use `--file -` to read the declaration from stdin.
-`--replace` adopts an existing container with the same name instead of refusing.
+Lines are `name agent [mode] [workspace]`; blank lines and `#` comments are ignored,
+and `mode`/`workspace` fall back to `persistent` and `~/agent-workspace/<name>`.
+Use `--file -` to read the declaration from stdin, and `--save FILE` to write back
+what you created (the TUI offers the same thing when you create several containers).
 
-For simple cases the flags are enough:
+## Which agents a container can run
 
-~~~bash
-./install.sh --agent opencode --count 2 --name box --workspace "$PWD"
-~~~
+The image decides. `/usr/share/agent-workspace/manifest.json` inside the image
+carries an `agentCatalog` that lists, for every agent the build installed, its
+command, its label and the environment variable that holds its credential. The
+installer reads that catalog from the image (`./install.sh --help-agents`, which
+runs without an engine), and
+falls back to a built-in table when the image cannot be inspected. Turning an agent
+on or off is a build-time decision: `config/agents.conf` (see [agents.md](agents.md)).
 
 ## Credentials
 
-Each created container gets its own file,
-`~/.config/agent-workspace/containers/<name>.env`, written with mode `600` and
-passed to podman with `--env-file`. The installer learns the key names from the image
-catalog (`AGENT_ENV` in the agent recipe) and takes values from your environment when
-they are already exported; `--env KEY=VALUE` adds one explicitly. Nothing is baked into
-an image, and the file never lands in the workspace.
+Each container gets its own environment file,
+`~/.config/agent-workspace/containers/<name>.env`, written with mode `600` and passed
+to the engine with `--env-file`. Values are taken from your environment when they are
+already exported (`DEEPSEEK_API_KEY`), otherwise the installer asks for them (and
+skips the prompt when there is no terminal). `--env KEY=VALUE` adds one explicitly.
+Nothing is baked into an image, and nothing lands in the workspace or in a snapshot.
+`fork` copies the source container's file and warns you to review it.
 
-## Managing what you created
+## What the installer keeps on this host
 
-~~~bash
-./install.sh --list             # name, agent, status
-./install.sh --verify           # running containers and the agent binary each one can run
-./install.sh --remove box       # container, home volume and credential file
-~~~
-
-Containers created by the installer are labelled
-`agent-workspace.manager=install.sh` together with `agent-workspace.agent` and
-`agent-workspace.mode`, so the tool only ever touches its own containers and can tell
-you which agent a container was created for.
-
-## Security notes
-
-* Run rootless: the container's root is your user, and anything it writes into
-  the bind-mounted workspace stays owned by you.
-* Only the workspace directory is mounted, with the `:z` SELinux relabel - not your
-  home directory.
-* Keep keys in the per-container env file (mode 600) or the environment rather
-  than in shell history.
-* The image's own `agent-workspace` CLI refuses lifecycle commands inside a
-  container: the host owns container lifecycle.
-
-## Troubleshooting
-
-| Symptom | Fix |
+| Path | Content |
 | --- | --- |
-| `podman is not available` | install podman, or point `PODMAN` at it |
-| `container ... already exists` | re-run with `--replace`, or choose another `--name` |
-| the image cannot be pulled | `--image <ref>` for a local build, `--no-pull` to fail fast |
-| a credential is missing | re-run with `--env KEY=VALUE`, or export it first |
-| nothing is listed | `--list` only shows containers this installer created |
+| `~/.config/agent-workspace/containers/<name>.env` | the container's credentials, mode 600 |
+| `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, workspace, volume, image, timestamps |
+| `~/.local/share/agent-workspace/containers/<name>/meta.history` | one line per lifecycle event |
+| `~/.local/share/agent-workspace/snapshots/<name>/<id>/` | `meta` plus `home.tar.gz` (see [rollback.md](rollback.md)) |
+
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. Containers created here carry the
+label `agent-workspace.manager=install.sh`, which is how `list` and `doctor` know
+which containers are theirs.
+
+## Doctor
+
+`install.sh doctor` checks the engine, the recorded containers and their volumes, the
+default image, the credential files (they must be mode `600`) and the snapshot
+archives (they must be readable tarballs). `--strict` exits non-zero when anything is
+wrong, which is what the test suite uses.

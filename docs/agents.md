@@ -106,7 +106,7 @@ each operator supplies their own keys. The idiomatic places are:
 
 | Mechanism | Example |
 | --- | --- |
-| `/etc/agent-workspace/config.env` | machine-level defaults, three-way merged by bootc |
+| `/etc/agent-workspace/config.env` | per-instance overrides; the in-image CLI reads it at runtime |
 | systemd credentials | `LoadCredential=` in a unit |
 | podman secrets | `podman run --secret` for containerised agents |
 | per-container env file | `install.sh` writes `~/.config/agent-workspace/containers/<name>.env` (mode 600) and passes it with `--env-file` |

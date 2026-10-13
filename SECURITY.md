@@ -22,9 +22,10 @@ rotation of anything that leaked.
 | In scope | Out of scope |
 | --- | --- |
 | The build pipeline and what the image ships | Vulnerabilities in Fedora packages (report upstream; we pick up fixes via the base image) |
+| `install.sh` and the container lifecycle it drives | Vulnerabilities in podman or docker themselves |
 | The `agent-workspace` CLI and its systemd units | The agent CLIs' own behaviour with your credentials |
 | CI/CD: what can push to GHCR, what can sign | Your GHCR repository settings and personal access tokens |
-| Secrets hygiene in the repository | Operator mistakes such as committing keys to a fork |
+| Secrets hygiene in the repository | Operator mistakes such as committing keys to a fork, or choosing `--engine docker --privileged` on a host you do not trust the container with |
 
 ## Design decisions that affect security
 
@@ -35,12 +36,20 @@ rotation of anything that leaked.
   key to steal. `cosign verify` with an identity regexp is the recommended
   verification path. Key-based signing (a `SIGNING_SECRET` repository secret) is
   supported for fleets that verify against a pinned public key.
-- **The image is the only writable-by-no-one layer.** On a booted system, agent
-  tooling runs as the unprivileged `agent` user with rootless podman and a
-  sub-id range; the OS layers stay immutable.
-- **`/etc` is deliberately mergeable.** Operator overrides survive updates,
-  which also means a hostile override survives them. Treat write access to
-  `/etc/agent-workspace/config.env` as privileged.
+- **Containers share the host kernel.** A container started by `install.sh` is
+  an isolated filesystem and process tree, not a virtual machine: a kernel
+  vulnerability, or a container deliberately run with `--privileged` (which the
+  `docker` engine path needs for systemd), reaches the host. Use `podman`
+  (rootless) when the agent is not fully trusted, and prefer a virtual machine
+  when the boundary must be hard.
+- **Inside the container, the agent is unprivileged.** Agent tooling runs as the
+  `agent` user with rootless podman and a sub-id range; the image layers stay
+  immutable, and the writable layers belong to the container, so the blast radius
+  of an agent mistake ends at `install.sh remove <name>`.
+- **The container layer is writable by design.** Whatever the agent installs or
+  edits in `/etc` or `/usr/local` persists for the life of the container and is
+  captured by `install.sh snapshot`. Treat `install.sh rollback` on a container
+  you did not build yourself as restoring someone else's content.
 - **Unqualified container names are permissive.** The registries drop-in enables
   short names so agents can `podman run alpine` without ceremony; if your threat
   model dislikes that, turn it off in `system_files/etc/containers/registries.conf.d/00-agent-workspace.conf`.
@@ -48,5 +57,5 @@ rotation of anything that leaked.
 ## Supported versions
 
 Only the newest published tag (and the newest dated tag) receives fixes. There
-are no long-term support branches: bootc machines move forward, and rollback is
-the safety net.
+are no long-term support branches: you move forward with `install.sh upgrade`,
+and rollback to a snapshot is the safety net.

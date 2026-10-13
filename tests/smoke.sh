@@ -41,7 +41,7 @@ else
   fail "doctor --offline --strict"
 fi
 
-for binary in bootc podman git node npm python3 gh jq curl tmux nvim rg; do
+for binary in podman git node npm python3 gh jq curl tmux nvim rg; do
   if in_image /bin/bash -c "command -v ${binary} >/dev/null"; then
     pass "binary ${binary}"
   else

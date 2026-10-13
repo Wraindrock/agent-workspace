@@ -8,9 +8,8 @@ CONFIG="/etc/agent-workspace/config.env"
 
 log() { printf '[agent-workspace-firstboot] %s\n' "$*"; }
 
-# Defaults may be overridden by /etc/agent-workspace/config.env, which is
-# applied declaratively by the operator (and survives image updates because
-# /etc is preserved by bootc).
+# Defaults may be overridden by /etc/agent-workspace/config.env, which the
+# container gets from the installer (--env-file) or from the image itself.
 AGENT_WORKSPACE_USER="${AGENT_WORKSPACE_USER:-agent}"
 AGENT_WORKSPACE_SHELL="${AGENT_WORKSPACE_SHELL:-/bin/bash}"
 
