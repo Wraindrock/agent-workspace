@@ -47,10 +47,43 @@ enable_unit() {
 # ---------------------------------------------------------------------------
 # Package helpers (Fedora / dnf5)
 # ---------------------------------------------------------------------------
+# rpm_installed tells whether a package name is already present in the image.
+rpm_installed() {
+  rpm -q "$1" >/dev/null 2>&1
+}
+
 # install_rpms installs a required package set; failure aborts the build.
+#
+# Packages that are already present are filtered out first: dnf5 aborts the
+# entire transaction when a single argument cannot be resolved, so one stale
+# name (for example `uidmap`, whose binaries moved into shadow-utils) would
+# otherwise hide every package that is perfectly available.
 install_rpms() {
-  log "dnf5 install: $*"
-  dnf5 install -y --setopt=install_weak_deps=False "$@"
+  require_command dnf5
+  local -a pending=()
+  local pkg
+  for pkg in "$@"; do
+    if rpm_installed "$pkg"; then
+      log "already installed: ${pkg}"
+    else
+      pending+=("${pkg}")
+    fi
+  done
+  if (( ${#pending[@]} == 0 )); then
+    ok "every requested package is already installed"
+    return 0
+  fi
+  log "dnf5 install: ${pending[*]}"
+  if ! dnf5 install -y --setopt=install_weak_deps=False "${pending[@]}"; then
+    warn "dnf5 could not resolve every package; retrying with --skip-unavailable"
+    dnf5 install -y --setopt=install_weak_deps=False --skip-unavailable "${pending[@]}" \
+      || die "dnf5 could not install the required packages: ${pending[*]}"
+  fi
+  # A required package that silently disappears between releases must be
+  # visible in the build log instead of failing later at runtime.
+  for pkg in "${pending[@]}"; do
+    rpm_installed "$pkg" || warn "required package is still missing: ${pkg}"
+  done
 }
 
 # install_optional_rpms installs packages that are nice to have. Missing
@@ -59,7 +92,9 @@ install_rpms() {
 install_optional_rpms() {
   local pkg
   for pkg in "$@"; do
-    if dnf5 install -y --setopt=install_weak_deps=False "$pkg" >/dev/null 2>&1; then
+    if rpm_installed "$pkg"; then
+      log "optional package already present: ${pkg}"
+    elif dnf5 install -y --setopt=install_weak_deps=False "$pkg" >/dev/null 2>&1; then
       ok "optional package installed: ${pkg}"
     else
       warn "optional package unavailable on this base: ${pkg} (skipped)"

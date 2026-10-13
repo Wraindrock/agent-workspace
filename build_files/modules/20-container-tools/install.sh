@@ -13,8 +13,10 @@ install_rpms \
   passt \
   podman \
   podman-docker \
-  skopeo \
-  uidmap
+  skopeo
+
+# `uidmap` no longer exists as a package on current Fedora: newuidmap and
+# newgidmap ship in shadow-utils, which every base image already has.
 
 # Legacy CNI plugins and slirp4netns are gone from newer Fedora bases; keep
 # them when they exist so older bases still get a complete stack.
@@ -30,4 +32,8 @@ install -d -m 0755 /etc/containers/registries.conf.d
 if ! grep -q '^root:' /etc/subuid 2>/dev/null; then
   echo 'root:100000:65536' >> /etc/subuid
   echo 'root:100000:65536' >> /etc/subgid
+fi
+
+if ! command -v newuidmap >/dev/null 2>&1; then
+  warn "newuidmap is missing, rootless sub-id mapping will not work on this base"
 fi
