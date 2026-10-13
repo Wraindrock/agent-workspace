@@ -27,14 +27,17 @@ just verify     # slow: builds the image and runs the container self test
 If you do not have `just`, the tests are plain scripts:
 
 ~~~bash
-bash tests/lint.sh
+bash tests/lint.sh          # includes tests/install.sh, which needs no container engine
+bash tests/install.sh       # only the installer tests, against a fake podman
 podman build -t localhost/agent-workspace:dev .
 bash tests/smoke.sh localhost/agent-workspace:dev
 ~~~
 
 `tests/lint.sh` is the same check CI runs on every pull request, and it degrades
 gracefully: `shellcheck`, `actionlint`, `just`, `jq` and `pyyaml` are used when
-present, skipped when not. The build workflow installs the pinned `actionlint`
+present, skipped when not. `tests/install.sh` drives `install.sh` against a fake
+`podman`, so the host installer is covered in CI without a container engine or
+root. The build workflow installs the pinned `actionlint`
 and `just`, so a workflow edit that uses an unavailable context - or a Justfile
 that no longer parses - fails in CI before any build.
 

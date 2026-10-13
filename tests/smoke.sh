@@ -49,6 +49,21 @@ for binary in bootc podman git node npm python3 gh jq curl tmux nvim rg; do
   fi
 done
 
+# The image publishes the agents it ships; every binary in that catalog has to
+# be runnable, otherwise install.sh would offer an agent the image cannot start.
+catalog="$(in_image /usr/bin/agent-workspace manifest --json 2>/dev/null | jq -r '(.agentCatalog // {}) | to_entries[] | .value.binaries[]' 2>/dev/null || true)"
+if [[ -z "$catalog" ]]; then
+  fail "manifest declares no agent catalog"
+else
+  for binary in $catalog; do
+    if in_image /bin/bash -c "command -v ${binary} >/dev/null"; then
+      pass "agent binary ${binary}"
+    else
+      fail "agent binary ${binary}"
+    fi
+  done
+fi
+
 for unit in /etc/systemd/system/agent-workspace-firstboot.service \
             /usr/lib/systemd/system/agent-workspace-health.timer \
             /etc/sysctl.d/90-agent-workspace.conf; do

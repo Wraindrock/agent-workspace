@@ -6,6 +6,10 @@
 # runner-facing checks look for the real binary instead of guessing it.
 # shellcheck disable=SC2034 # consumed by the harness that sources this recipe
 AGENT_BINARIES="aider"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_TITLE="Aider"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_ENV="OPENAI_API_KEY"
 
 install_agent() {
   pipx_install aider-chat

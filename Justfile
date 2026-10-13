@@ -89,6 +89,12 @@ sandbox agent="claude" dir="." $target_image=image_name $tag=default_tag:
       --workdir /workspace \
       "${target_image}:${tag}" "${agent}"
 
+# Create agent containers on this host with the interactive installer.
+# Flags reach install.sh after --, e.g. "just install -- --list".
+[group('Sandbox')]
+install *args:
+    ./install.sh {{args}}
+
 # ---------------------------------------------------------------------------
 # Release helpers - used by .github/workflows/build.yml
 # ---------------------------------------------------------------------------

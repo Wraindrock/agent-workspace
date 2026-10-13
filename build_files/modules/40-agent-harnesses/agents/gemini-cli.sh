@@ -6,6 +6,10 @@
 # runner-facing checks look for the real binary instead of guessing it.
 # shellcheck disable=SC2034 # consumed by the harness that sources this recipe
 AGENT_BINARIES="gemini"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_TITLE="Google Gemini CLI"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_ENV="GEMINI_API_KEY"
 
 install_agent() {
   npm_install_global @google/gemini-cli

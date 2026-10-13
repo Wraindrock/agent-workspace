@@ -6,6 +6,10 @@
 # runner-facing checks look for the real binary instead of guessing it.
 # shellcheck disable=SC2034 # consumed by the harness that sources this recipe
 AGENT_BINARIES="claude"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_TITLE="Claude Code"
+# shellcheck disable=SC2034 # consumed by the harness that sources this recipe
+AGENT_ENV="ANTHROPIC_API_KEY"
 
 install_agent() {
   npm_install_global @anthropic-ai/claude-code

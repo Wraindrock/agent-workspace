@@ -131,9 +131,33 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 ## Agent
 
 `config/agents.conf` 决定镜像里装哪些 agent，配方位于
-`build_files/modules/40-agent-harnesses/agents/`。默认启用 Claude Code、Codex CLI
-与 Gemini CLI，另外提供 OpenCode 与 Aider 配方。详情见
-[docs/agents.md](docs/agents.md)。
+`build_files/modules/40-agent-harnesses/agents/`。默认启用 **DSH（DeepSeek Harness）**
+与 **OpenCode**；Claude Code、Codex CLI、Gemini CLI、Aider 的配方也都在，把对应的一行
+改成 `1` 就会装进镜像。镜像会把自己支持的 agent 写进 manifest（`agentCatalog`），
+`install.sh` 据此生成菜单。详情见 [docs/agents.md](docs/agents.md)。
+
+## 在主机上创建容器
+
+仓库根目录的 `install.sh` 把镜像变成真正可用的容器：一次创建任意数量，每个容器选择
+运行哪个 agent，凭据保存在各自独立的 env 文件里。
+
+~~~bash
+./install.sh                 # 交互式向导：几个、叫什么名字、每个跑哪个 agent
+./install.sh --list          # 查看本机已创建并管理的容器
+./install.sh --help          # 全部选项
+~~~
+
+同样的东西也可以写成声明文件，便于在另一台机器上复现：
+
+~~~
+# name       agent     lifecycle   workspace
+review-box   dsh       persistent  ~/work/review
+scratch      opencode  ephemeral
+~~~
+
+`persistent` 容器以 systemd 常驻、`/home/agent` 落在命名卷里、可跨重启
+（`podman exec -it review-box bash -lc 'dsh'` 进入）；`ephemeral` 只跑一条命令，
+退出即删除。完整说明见 [docs/containers.md](docs/containers.md)。
 
 ## 回滚、切换与固定
 

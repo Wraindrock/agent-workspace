@@ -69,6 +69,20 @@ agent_binaries_for() {
   printf '%s\n' "$binaries"
 }
 
+# agent_catalog_field prints one field of a harness's manifest entry
+# (agentCatalog): its title, its binaries, or the credential environment
+# variables it understands. Images built before that field existed print
+# nothing, and callers fall back to the historical behaviour.
+agent_catalog_field() {
+  local name="$1" field="$2"
+  [[ -r "$MANIFEST_PATH" ]] || return 0
+  have jq || return 0
+  jq -r --arg name "$name" --arg field "$field" '
+    ((.agentCatalog // {})[$name] // {})[$field]
+    | if type == "array" then .[] elif . == null then empty else . end
+  ' "$MANIFEST_PATH" 2>/dev/null
+}
+
 manifest_field() {
   local filter="$1"
   [[ -r "$MANIFEST_PATH" ]] || return 1

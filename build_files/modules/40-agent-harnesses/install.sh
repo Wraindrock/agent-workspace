@@ -53,6 +53,11 @@ for recipe in "${AGENTS_DIR}"/*.sh; do
     . "$recipe"
     install_agent
     record_value agent-binary "${agent} ${AGENT_BINARIES:-$agent}"
+    # One tab-separated catalog line per harness: name, binaries, title, the
+    # credential environment variables it understands. 80-manifest turns these
+    # into manifest.json's agentCatalog, which the host installer (install.sh)
+    # reads to offer exactly the agents this image ships.
+    record_value agent-catalog "$(printf '%s\t%s\t%s\t%s' "$agent" "${AGENT_BINARIES:-$agent}" "${AGENT_TITLE:-$agent}" "${AGENT_ENV:-}")"
   )
   echo "$agent" >> "${STATE_DIR}/agents.enabled"
   ok "agent ${agent}: installed"

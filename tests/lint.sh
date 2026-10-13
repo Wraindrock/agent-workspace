@@ -72,6 +72,18 @@ else
   pass "just not installed, skipped"
 fi
 
+echo "installer"
+# install.sh is exercised against a fake podman, so this needs neither root nor
+# a container engine: it asserts the commands, files and exit codes.
+installer_log="$(mktemp)"
+if bash tests/install.sh >"$installer_log" 2>&1; then
+  pass "tests/install.sh: $(tail -n 1 "$installer_log")"
+else
+  sed 's/^/  /' "$installer_log"
+  fail "tests/install.sh (see output above)"
+fi
+rm -f "$installer_log"
+
 echo "module contract"
 shopt -s nullglob
 for dir in build_files/modules/*/; do
@@ -150,7 +162,7 @@ else
 fi
 
 echo "required files"
-for required in Containerfile Justfile image.env LICENSE README.md docs/architecture.md docs/rollback.md; do
+for required in Containerfile Justfile install.sh image.env LICENSE README.md docs/architecture.md docs/rollback.md docs/containers.md; do
   if [[ -e "$required" ]]; then
     pass "$required"
   else

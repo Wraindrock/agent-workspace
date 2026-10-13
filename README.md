@@ -143,13 +143,45 @@ See [docs/modules.md](docs/modules.md) for the module contract and how to add on
 
 | Agent | Recipe | Installed via |
 | --- | --- | --- |
+| DSH (DeepSeek Harness) | `dsh.sh` | npm `@deepseek-ai/dsh` |
+| OpenCode | `opencode.sh` | npm `opencode-ai` |
 | Claude Code | `claude-code.sh` | npm `@anthropic-ai/claude-code` |
 | Codex CLI | `codex.sh` | npm `@openai/codex` |
 | Gemini CLI | `gemini-cli.sh` | npm `@google/gemini-cli` |
-| OpenCode | `opencode.sh` | npm `opencode-ai` |
 | Aider | `aider.sh` | pipx `aider-chat` |
 
+The default image ships DSH and OpenCode; the other recipes are one flip in
+`config/agents.conf` away. Each recipe declares the command it installs and the
+credentials it reads, and the built image publishes that as `agentCatalog` in its
+manifest, so tooling offers exactly the agents a build contains.
+
 Adding your own is a small shell function - see [docs/agents.md](docs/agents.md).
+
+## Containers on your host
+
+`install.sh` in the repository root turns the image into real containers: it
+creates as many as you want, asks which agent each one runs, and keeps every
+credential in its own file.
+
+~~~bash
+./install.sh                              # wizard: how many, named what, which agent
+./install.sh --list                       # what this host already has
+./install.sh --file containers.conf --dry-run
+~~~
+
+The same thing can be written down:
+
+~~~
+# name       agent     lifecycle   workspace
+review-box   dsh       persistent  ~/work/review
+scratch      opencode  ephemeral
+~~~
+
+`persistent` containers run systemd, keep `/home/agent` in a named volume and
+survive reboots (`podman exec -it review-box bash -lc dsh` to step in);
+`ephemeral` ones run a single command and are removed on exit. The agent menu is
+read from the image manifest, so it always matches the build. Full reference:
+[docs/containers.md](docs/containers.md).
 
 ## Rollback, switching and pinning
 

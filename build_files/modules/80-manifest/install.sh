@@ -14,6 +14,8 @@ agents_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "${STATE_DIR}/ag
 tools_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "${STATE_DIR}/tool" 2>/dev/null || echo '[]')"
 # agent-binary lines look like "<recipe> <command> [more commands]"
 binaries_json="$(jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {(.[0]): .[1:]}) | add // {}' "${STATE_DIR}/agent-binary" 2>/dev/null || echo '{}')"
+# agent-catalog lines look like "<recipe>\t<binaries>\t<title>\t<env vars>"
+catalog_json="$(jq -R -s 'split("\n") | map(select(length > 0) | split("\t")) | map({key: .[0], value: {title: (.[2] // ""), binaries: ((.[1] // "") | split(" ") | map(select(length > 0))), env: ((.[3] // "") | split(" ") | map(select(length > 0)))}}) | from_entries' "${STATE_DIR}/agent-catalog" 2>/dev/null || echo '{}')"
 
 version_of() {
   local binary="$1"
@@ -41,6 +43,7 @@ jq -n \
   --argjson modules "$modules_json" \
   --argjson agents "$agents_json" \
   --argjson agent_binaries "$binaries_json" \
+  --argjson agent_catalog "$catalog_json" \
   --argjson extra_tools "$tools_json" \
   '{
     schemaVersion: ($schema | tonumber),
@@ -55,6 +58,7 @@ jq -n \
     modules: $modules,
     agents: $agents,
     agentBinaries: $agent_binaries,
+    agentCatalog: $agent_catalog,
     toolchain: {
       bootc: $bootc,
       podman: $podman,

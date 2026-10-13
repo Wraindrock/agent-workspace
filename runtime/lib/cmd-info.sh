@@ -46,13 +46,14 @@ cmd_agents() {
     log "no agent harness is baked into this image"
     return 0
   fi
-  local agent binary
+  local agent binary title
   for agent in "${installed[@]}"; do
+    title="$(agent_catalog_field "$agent" title)"
     for binary in $(agent_binaries_for "$agent"); do
       if have "$binary"; then
-        ok "$agent -> $(command -v "$binary")"
+        ok "${agent}${title:+ (${title})} -> $(command -v "$binary")"
       else
-        warn "$agent is declared in the manifest but its binary ${binary} is missing"
+        warn "${agent} is declared in the manifest but its binary ${binary} is missing"
       fi
     done
   done
