@@ -16,10 +16,10 @@ it as isolated agent containers.
 ### Added
 
 - `install.sh`, the single supported entry point: a [gum](https://github.com/charmbracelet/gum)
-  TUI (with a plain `read` fallback when gum or a terminal is missing) that
-  creates named agent containers on `podman` or `docker`, plus the
-  non-interactive subcommands `create`, `list`, `start`, `stop`, `restart`,
-  `enter`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`,
+  TUI whose menu needs gum and a terminal; individual prompts fall back to a
+  plain `read`. It creates named agent containers on `podman` or `docker`, plus
+  the non-interactive subcommands `create`, `list`, `start`, `stop`, `restart`,
+  `enter`, `shell`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`,
   `upgrade`, `web`, `remove` and `doctor`.
 - Container lifecycle and rollback, entirely on the host: `snapshot` commits the
   container filesystem to a local image and archives `/home/agent`; `rollback`
@@ -31,9 +31,11 @@ it as isolated agent containers.
   can be read before it changes anything, refuses to continue when it cannot, and
   snapshots the container it replaces first (label `pre-rollback`, `--skip-safety` to
   turn that off). `snapshot` deletes a home archive it cannot read back, keeping the
-  filesystem snapshot. Retention and `remove --purge-snapshots` keep any snapshot
-  whose image a container still runs from - including containers this installer does
-  not manage - and report which container it was, instead of force-removing it.
+  filesystem snapshot. Retention keeps any snapshot whose image a container
+  still runs from - including containers this installer does not manage - and
+  reports which container it was. `remove --purge-snapshots` keeps that image
+  and reports the container too, but deletes the snapshot record and its home
+  archive.
 - Per-container credential files at
   `~/.config/agent-workspace/containers/<name>.env` (mode 600, passed to the
   engine with `--env-file`) and per-container host state under
@@ -64,27 +66,32 @@ it as isolated agent containers.
 - Agent recipes for DSH, OpenCode, Claude Code, Codex CLI, Gemini CLI and Aider,
   selected through `config/agents.conf` (`dsh` and `opencode` by default).
 - `agentCatalog` and `agentBinaries` in the image manifest: for every installed
-  agent its commands, its title and its credential variable, so the installer
-  menu and `agent-workspace agents` describe exactly what a build ships.
+  agent its commands, its title and its credential variable. The installer menu
+  starts from the built-in `dsh`/`opencode` entries and merges the image's
+  catalog over them, so it can offer an agent the image does not contain;
+  `agent-workspace agents` reports the running image's manifest.
 - The in-image `agent-workspace` CLI: `version`, `manifest`, `modules`,
   `agents`, `status` and `doctor --strict`.
 - First-boot provisioning (`agent-workspace-firstboot.service`) that creates the
-  unprivileged agent user with a sub-id range and enables lingering, guarded so
-  it runs exactly once per container.
+  `agent` user (a `wheel` member with a sub-id range; the container is not a
+  security boundary against the agent) and enables lingering, guarded so it runs
+  exactly once per container.
 - A daily `agent-workspace-health.timer` running `doctor --quiet`.
 - A machine-readable build manifest at `/usr/share/agent-workspace/manifest.json`
   and its shell-accessible counterpart `/etc/agent-workspace/build.env`.
-- CI (`build.yml`): lint (shellcheck, actionlint, `just --list`), build, container
-  self test, push to GHCR, and keyless cosign signing plus verification of the
-  digest the registry actually stored.
+- CI (`build.yml`): lint (shellcheck, actionlint, `just --list`, python3/pyyaml),
+  the installer integration tests (`tests/install.sh`, no engine required), build,
+  container self test, push to GHCR, and keyless cosign signing plus verification
+  of the digest the registry actually stored.
 - `tests/lint.sh`, `tests/smoke.sh`, `tests/install.sh` (a fake podman/docker
   engine in `tests/fixtures/fake-engine.sh`), run both locally through the
   Justfile and in CI.
 - Documentation: `README.md`, `README.zh-CN.md`, `docs/architecture.md`,
   `docs/modules.md`, `docs/agents.md`, `docs/containers.md`, `docs/rollback.md`.
 - Project files: MIT `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`,
-  `CODE_OF_CONDUCT.md`, issue and pull request templates, Dependabot and
-  Renovate configuration.
+  `CODE_OF_CONDUCT.md`, a `.mailmap` that folds the historical author spellings
+  into one identity, issue and pull request templates, Dependabot and Renovate
+  configuration.
 
 ### Changed
 
@@ -109,9 +116,26 @@ it as isolated agent containers.
 ### Fixed
 
 - `module.env` descriptions are quoted, so sourcing the file cannot execute them.
-- `00-preflight` materialises the `/usr/local` and `/root` symlink targets,
-  fixing `ENOTDIR` failures in npm and pipx installers.
+- `00-preflight` materialises the `/opt`, `/usr/local` and `/root` symlink targets
+  (`/var/opt`, `/var/usrlocal`, `/var/roothome`), fixing `ENOTDIR` failures in npm
+  and pipx installers. `/opt` was the missing one: every build logged
+  `WARN: pipx ensurepath failed`, and the opt-in `aider` recipe aborted the build
+  with `install: cannot create directory '/opt': File exists`. The `verify_layout`
+  step at the end of `build.sh` now fails the build when any of the three is left
+  dangling.
+- The image ships no build junk in runtime-only directories: `90-cleanup` removes
+  `/run/dnf` and the pipx log and cache directories under `/var/opt/pipx`, and
+  every npm invocation (including `npm config get prefix`) keeps its cache and
+  debug logs next to the cache `90-cleanup` removes instead of in `$HOME/.npm`.
+  These are the `nonempty-run-tmp` and `var-tmpfiles` findings of
+  `bootc container lint`, and CI now fails the build when `/run` is not empty.
 - `90-cleanup` no longer removes the build state that the build summary still
   reads.
+- `install.sh web` prints the port as a port (`http://127.0.0.1:3080/`), not as a
+  path segment (`http://127.0.0.1/3080/`).
+- Documentation that the code did not support is corrected: the lint tool list and
+  the CI test list, the `install.sh` subcommand list (`shell` was missing), the
+  module and agent recipe contracts, which user the container runs the agent as,
+  and the snapshot guarantees that `doctor` checks.
 
 [0.1.0]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.0

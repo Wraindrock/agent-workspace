@@ -133,7 +133,10 @@ snapshot can silently restore a half-written home directory.
   rmi`, the disk holding it failed), the installer stops and tells you instead of
   handing you a half-restored container: the archive alone cannot rebuild a
   filesystem, and the image alone cannot rebuild your home volume. `./install.sh
-  doctor --strict` is the cheap check - it verifies that the recorded images still
-  exist and that every snapshot archive is a readable tarball.
+  doctor --strict` is the cheap check - it verifies each container's recorded run
+  image and reads back every snapshot archive, but it does not check the
+  per-snapshot images. A snapshot image that has gone missing surfaces when you
+  roll a container back (the command stops with `snapshot image ... is gone`);
+  `recover` and `fork` would likewise fail when they try to use it.
 - **Your host system.** Nothing in this project updates, pins or rolls back the OS
   you are running the containers on. That is your distribution's job.

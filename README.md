@@ -6,8 +6,9 @@ Fedora bootc OS with the agent you chose inside it.
 
 - **One entry point** - `./install.sh`, an interactive TUI. No manifest to write, no
   `docker run` incantation to memorise, no root required.
-- **A whole OS per agent** - its own PID 1, systemd, users, package database and
-  SELinux policy, so `dnf install`, `npm install -g` or a stray `rm -rf` stays inside.
+- **A whole OS per agent** - its own PID 1, systemd, users and package database
+  (the host's SELinux policy still applies), so `dnf install`, `npm install -g` or
+  a stray `rm -rf` stays inside.
 - **Snapshots and rollback** - commit a container, roll back to it, recover it after an
   accident, or fork it into a second one: [docs/rollback.md](docs/rollback.md).
 - **Declarative build** - the image is described by `image.env`, `config/modules.conf`
@@ -91,8 +92,8 @@ podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
 podman exec -it agent-box /bin/bash
 ~~~
 
-On first boot inside any instance, the image creates the unprivileged `agent` user
-that owns the agent workspace (see [First boot](#first-boot)).
+On first boot inside any instance, the image creates the `agent` user that owns the
+agent workspace and runs the web UI (see [First boot](#first-boot)).
 
 ## What "declarative" means here
 
@@ -101,7 +102,7 @@ Three files describe everything, and the image proves that it matches them:
 | File | Declares |
 | --- | --- |
 | `image.env` | image identity: name, organisation, description, default tag, base image, agent user |
-| `config/modules.conf` | which build modules run (`20-container-tools=1`, `40-agent-harnesses=0`, ...) |
+| `config/modules.conf` | which build modules run (`20-container-tools=1`, `40-agent-harnesses=1`, ...) |
 | `config/agents.conf` | which agent harnesses are installed (`dsh=1`, `opencode=1`, ...) |
 
 At build time the pipeline writes `/usr/share/agent-workspace/manifest.json` **inside
@@ -112,8 +113,9 @@ toolchain versions and the exact base image. On a deployed host:
 agent-workspace manifest | jq '.modules, .agents, .baseImage'
 ~~~
 
-If a machine disagrees with its own manifest, `agent-workspace doctor --strict`
-exits non-zero - which is exactly what the daily health timer runs.
+`agent-workspace doctor --strict` exits non-zero when a machine disagrees with its
+own manifest - that is what you run in a test. The daily health timer instead runs
+`agent-workspace doctor --quiet` and only logs the result.
 
 ## Modules
 
@@ -127,7 +129,7 @@ Modules run in filename order. Each directory in `build_files/modules/` contains
 | `20-container-tools` | podman, buildah, skopeo, crun, netavark, passt, `podman.socket`, sub-id ranges |
 | `30-agent-toolchains` | gcc/make, gh, just, Node.js + pnpm/tsx/typescript, Python + pipx, uv |
 | `40-agent-harnesses` | the agent CLIs selected in `config/agents.conf` |
-| `50-devtools` | neovim, ripgrep, tmux, fzf-adjacent shell tooling, shellcheck, direnv |
+| `50-devtools` | neovim, ripgrep, tmux, tree, zsh, ShellCheck, direnv, fd-find, git-delta, htop, make (optional bat, btop, eza, starship) |
 | `60-system-config` | systemd units, sysctl tuning, registries config, `/etc/skel` |
 | `80-manifest` | writes the image manifest and module list |
 | `90-cleanup` | drops caches and logs so the image stays lean |
@@ -151,7 +153,9 @@ See [docs/modules.md](docs/modules.md) for the module contract and how to add on
 The default image ships DSH and OpenCode; the other recipes are one flip in
 `config/agents.conf` away. Each recipe declares the command it installs and the
 credentials it reads, and the built image publishes that as `agentCatalog` in its
-manifest, so tooling offers exactly the agents a build contains.
+manifest. The installer's menu starts from the built-in `dsh` and `opencode`
+entries and merges the image's `agentCatalog` over them, so it follows the build
+while still offering the built-ins when the manifest cannot be read.
 
 Adding your own is a small shell function - see [docs/agents.md](docs/agents.md).
 
@@ -182,8 +186,10 @@ scratch      opencode  ephemeral
 ~~~
 
 `persistent` containers run systemd, keep `/home/agent` in a named volume and survive
-reboots; `ephemeral` ones run one command and are removed on exit. The agent menu is
-read from the image's own manifest, so it always matches the build. Full reference:
+reboots; `ephemeral` ones run one command and are removed on exit. The agent menu
+starts from the built-in `dsh`/`opencode` entries and merges the image's
+`agentCatalog` over them, so it follows the build while still offering the built-ins
+when the manifest cannot be read. Full reference:
 [docs/containers.md](docs/containers.md).
 
 ## Opening the agent's web UI
@@ -200,7 +206,7 @@ a one-time link:
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
-  open this once: http://127.0.0.1:34700/?token=...
+  open: http://127.0.0.1:34700/?token=...
 ~~~
 
 That first request sets a 30-day cookie in your browser, so the token is only needed
@@ -254,10 +260,11 @@ just verify    # build + container self test
 ~~~
 
 Requirements: `podman` (or `docker`) and `just`, plus `bash` 4.4+ for `install.sh`.
-The lint uses `shellcheck`, `actionlint` and `jq` when they are present and skips them
-when they are not; CI installs all three. It runs the same `tests/lint.sh`,
-`tests/install.sh` and `tests/smoke.sh` on every pull request, so nothing is "only
-tested on my machine".
+The lint uses `shellcheck`, `actionlint`, `just` and `python3` + `pyyaml` when they
+are present and skips them when they are not; `tests/smoke.sh` separately needs `jq`.
+CI installs `actionlint` and `just` explicitly, and relies on the runner image for
+`shellcheck`, `jq` and `python3`. Every pull request runs the same `tests/lint.sh`,
+`tests/install.sh` and `tests/smoke.sh`, so nothing is "only tested on my machine".
 
 ## Repository layout
 
@@ -273,7 +280,7 @@ build_files/
   modules/<NN-name>/      one module per concern, each with module.env + install.sh
 config/                  modules.conf, agents.conf - the declarative switches
 system_files/            verbatim overlay copied to / (systemd, sysctl, profile.d)
-runtime/                 the in-image agent-workspace CLI (version, manifest, doctor)
+runtime/                 the in-image CLI (version, manifest, modules, agents, status, doctor)
 tests/                   lint.sh, smoke.sh, install.sh + a fake engine fixture
 docs/                    architecture, modules, agents, containers, rollback
 ~~~
@@ -282,10 +289,13 @@ Full design notes: [docs/architecture.md](docs/architecture.md).
 
 ## First boot
 
-A one-shot `agent-workspace-firstboot.service` creates the unprivileged
-`agent` user (configurable via `AGENT_USER`, or
-`/etc/agent-workspace/config.env` per machine), grants it a sub-id range so
-rootless podman works, and enables lingering. A daily
+A one-shot `agent-workspace-firstboot.service` creates the `agent` user
+(configurable via `AGENT_WORKSPACE_USER`, set per machine in
+`/etc/agent-workspace/config.env`), adds it to `wheel`, grants it a sub-id range so
+rootless podman works, and enables lingering. That user owns the agent workspace and
+runs the web UI; the terminal side (`install.sh enter`, `install.sh shell`) execs the
+agent CLI as the container's own root user, so the container is not a security
+boundary against the agent. A daily
 `agent-workspace-health.timer` runs `agent-workspace doctor --quiet` so drift
 shows up in `journalctl` instead of in a broken agent session.
 

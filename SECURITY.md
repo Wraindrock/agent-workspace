@@ -42,10 +42,18 @@ rotation of anything that leaked.
   `docker` engine path needs for systemd), reaches the host. Use `podman`
   (rootless) when the agent is not fully trusted, and prefer a virtual machine
   when the boundary must be hard.
-- **Inside the container, the agent is unprivileged.** Agent tooling runs as the
-  `agent` user with rootless podman and a sub-id range; the image layers stay
-  immutable, and the writable layers belong to the container, so the blast radius
-  of an agent mistake ends at `install.sh remove <name>`.
+- **Inside the container, nothing confines the agent.** `install.sh enter` and
+  `shell` `exec` into the container as its default user, which is root: this
+  installer never creates a container with `--user`. Only the web UI drops to the
+  `agent` user, which first boot additionally puts in the `wheel` group
+  (`runtime/lib/firstboot.sh:24`) and gives a sub-id range for rootless podman.
+  So the agent can edit `/etc`, `dnf install` and run rootless containers. `sudo`
+  is installed too, but this repository ships no `sudoers`/`NOPASSWD` override and
+  the base image keeps Fedora's stock `%wheel ALL=(ALL) ALL`, which wants a
+  password the created `agent` account does not have. The image layers stay
+  immutable and the writable layers belong to the container, so the blast radius
+  of an agent mistake ends at `install.sh remove <name>` - but the container is
+  not a security boundary against the agent itself.
 - **The container layer is writable by design.** Whatever the agent installs or
   edits in `/etc` or `/usr/local` persists for the life of the container and is
   captured by `install.sh snapshot`. Treat `install.sh rollback` on a container

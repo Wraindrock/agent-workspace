@@ -6,8 +6,8 @@
 
 - **只有一个入口**：`./install.sh` 的交互式 TUI。不用写 manifest，不用背
   `docker run` 参数，也不需要 root。
-- **一个 agent 独占一套系统**：自己的 PID 1、systemd、用户、软件包数据库与
-  SELinux 策略，所以 `dnf install`、`npm install -g` 或一次误删都留在容器里。
+- **一个 agent 独占一套系统**：自己的 PID 1、systemd、用户与软件包数据库
+  （SELinux 策略沿用宿主机的），所以 `dnf install`、`npm install -g` 或一次误删都留在容器里。
 - **快照与回滚**：给容器打快照、回滚、事故后恢复，或者分叉出第二个容器：
   [docs/rollback.md](docs/rollback.md)。
 - **声明式构建**：镜像由 `image.env`、`config/modules.conf`、`config/agents.conf`
@@ -84,8 +84,8 @@ podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
 podman exec -it agent-box /bin/bash
 ~~~
 
-任何实例首次启动时，镜像会创建非特权用户 `agent`，由它持有 agent 工作区
-（见[首次开机](#首次开机)）。
+任何实例首次启动时，镜像会创建持有 agent 工作区、并用来运行 web UI 的 `agent`
+用户（见[首次开机](#首次开机)）。
 
 ## “声明式”在这里的含义
 
@@ -94,7 +94,7 @@ podman exec -it agent-box /bin/bash
 | 文件 | 声明内容 |
 | --- | --- |
 | `image.env` | 镜像身份：名称、组织、描述、默认 tag、基础镜像、agent 用户名 |
-| `config/modules.conf` | 哪些构建模块参与（`20-container-tools=1`、`40-agent-harnesses=0` ……） |
+| `config/modules.conf` | 哪些构建模块参与（`20-container-tools=1`、`40-agent-harnesses=1` ……） |
 | `config/agents.conf` | 安装哪些 agent（`dsh=1`、`opencode=1` ……） |
 
 构建时，pipeline 会在**镜像内**写入 `/usr/share/agent-workspace/manifest.json`，
@@ -104,8 +104,8 @@ podman exec -it agent-box /bin/bash
 agent-workspace manifest | jq '.modules, .agents, .baseImage'
 ~~~
 
-如果机器与自己的 manifest 不一致，`agent-workspace doctor --strict` 会返回非零
-退出码——每日健康检查定时器跑的就是它。
+`agent-workspace doctor --strict` 在机器与自己的 manifest 不一致时返回非零退出码，
+供测试使用；每日健康检查定时器跑的是 `agent-workspace doctor --quiet`，只记录结果。
 
 ## 模块
 
@@ -119,7 +119,7 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 | `20-container-tools` | podman、buildah、skopeo、crun、netavark、passt、`podman.socket`、sub-id 区间 |
 | `30-agent-toolchains` | gcc/make、gh、just、Node.js + pnpm/tsx/typescript、Python + pipx、uv |
 | `40-agent-harnesses` | 依据 `config/agents.conf` 选择安装的 agent CLI |
-| `50-devtools` | neovim、ripgrep、tmux、tree、zsh、fd、git-delta、htop、shellcheck、direnv |
+| `50-devtools` | neovim、ripgrep、tmux、tree、zsh、ShellCheck、direnv、fd-find、git-delta、htop、make（可选 bat、btop、eza、starship） |
 | `60-system-config` | systemd 单元、sysctl 调优、registries 配置、`/etc/skel` |
 | `80-manifest` | 写出镜像 manifest 与模块清单 |
 | `90-cleanup` | 清理缓存与日志，保持镜像精简 |
@@ -132,7 +132,8 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 `build_files/modules/40-agent-harnesses/agents/`。默认启用 **DSH（DeepSeek Harness）**
 与 **OpenCode**；Claude Code、Codex CLI、Gemini CLI、Aider 的配方也都在，把对应的一行
 改成 `1` 就会装进镜像。镜像会把自己支持的 agent 写进 manifest（`agentCatalog`），
-`install.sh` 据此生成菜单。详情见 [docs/agents.md](docs/agents.md)。
+`install.sh` 的菜单以内置 `dsh`、`opencode` 为底、再合并镜像的 `agentCatalog`，
+所以既跟随构建，也在读不到 manifest 时保留内置项。详情见 [docs/agents.md](docs/agents.md)。
 
 ## 管理容器
 
@@ -161,8 +162,9 @@ scratch      opencode  ephemeral
 ~~~
 
 `persistent` 容器以 systemd 常驻、`/home/agent` 落在命名卷里、可跨重启；`ephemeral`
-只跑一条命令，退出即删除。agent 菜单直接读镜像自己的 manifest，所以永远与构建一致。
-完整说明见 [docs/containers.md](docs/containers.md)。
+只跑一条命令，退出即删除。agent 菜单以内置 `dsh`/`opencode` 为底、合并镜像的
+`agentCatalog`，既跟随构建，也在读不到 manifest 时保留内置项。完整说明见
+[docs/containers.md](docs/containers.md)。
 
 ## 在宿主机打开 agent 的 web UI
 
@@ -176,7 +178,7 @@ DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安�
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
-  open this once: http://127.0.0.1:34700/?token=...
+  open: http://127.0.0.1:34700/?token=...
 ~~~
 
 第一次访问会在浏览器里写入 30 天有效的 cookie，因此 token 只需要用一次。宿主端口在
@@ -203,9 +205,18 @@ DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安�
 
 ## 校验镜像
 
-镜像使用 [cosign](https://docs.sigstore.dev/) 签名。默认走 GitHub OIDC 的
-keyless 签名；如果你更信任固定公钥，运行 `just cosign-keygen` 并把私钥存为
-仓库 secret `SIGNING_SECRET`，工作流会自动切换到密钥签名。
+镜像使用 [cosign](https://docs.sigstore.dev/) 签名。发布默认通过 GitHub 的 OIDC
+身份做 keyless 签名：
+
+~~~bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/wraindrock/agent-workspace/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/wraindrock/agent-workspace:latest
+~~~
+
+如果你更信任固定公钥，运行 `just cosign-keygen` 并把私钥存为仓库 secret
+`SIGNING_SECRET`，工作流会自动切换到密钥签名。
 
 ## 自己构建镜像
 
@@ -218,9 +229,10 @@ just verify    # 构建 + 容器自检
 ~~~
 
 依赖：`podman`（或 `docker`）与 `just`，运行 `install.sh` 另需 bash 4.4+。
-仓库自检在装了 `shellcheck`、`actionlint`、`jq` 时使用它们，没装就跳过，CI 会全部
-装上。每个 PR 都会跑同一套 `tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`，
-所以没有「只在我机器上测过」这种事。
+仓库自检在装了 `shellcheck`、`actionlint`、`just`、`python3`+`pyyaml` 时使用它们，
+没装就跳过；`tests/smoke.sh` 另需 `jq`。CI 只显式安装 `actionlint` 与 `just`，其余
+依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套
+`tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`，所以没有「只在我机器上测过」这种事。
 
 ## 目录结构
 
@@ -233,7 +245,7 @@ Justfile                 本地构建、镜像检查与发布辅助 recipe
 build_files/             模块化的构建脚本（build.sh + lib/ + modules/）
 config/                  声明式开关：modules.conf、agents.conf
 system_files/            原样覆盖到 / 的文件（systemd、sysctl、profile.d）
-runtime/                 镜像内的 agent-workspace CLI（version、manifest、doctor）
+runtime/                 镜像内的 agent-workspace CLI（version、manifest、modules、agents、status、doctor）
 tests/                   lint.sh、smoke.sh、install.sh 以及假引擎桩
 docs/                    架构、模块、agent、容器、回滚文档
 ~~~
@@ -257,11 +269,13 @@ docs/                    架构、模块、agent、容器、回滚文档
 ## 首次开机
 
 任何实例（容器或裸机）首次启动时，一次性的 `agent-workspace-firstboot.service`
-会创建非特权用户 `agent`（可用 `AGENT_USER` 或每机的
-`/etc/agent-workspace/config.env` 调整），为它分配 sub-id 范围以便 rootless podman
-可用，并开启 lingering。另有每日 `agent-workspace-health.timer` 运行
-`agent-workspace doctor --quiet`，让漂移出现在 `journalctl` 里，而不是某个 agent
-会话的报错里。
+会创建 `agent` 用户（可用 `AGENT_WORKSPACE_USER` 调整，写在每机的
+`/etc/agent-workspace/config.env` 里），把它加入 `wheel` 组，为它分配 sub-id 范围
+以便 rootless podman 可用，并开启 lingering。该用户持有 agent 工作区、也是 web UI
+的运行身份；终端侧（`install.sh enter`、`install.sh shell`）以容器自身的 root 用户
+执行 agent CLI，所以容器对 agent 并不是安全边界。另有每日
+`agent-workspace-health.timer` 运行 `agent-workspace doctor --quiet`，让漂移出现在
+`journalctl` 里，而不是某个 agent 会话的报错里。
 
 ## 参与贡献
 
@@ -272,3 +286,7 @@ docs/                    架构、模块、agent、容器、回滚文档
 ## 许可证
 
 [MIT](LICENSE) (c) 2026 Wraindrock。
+
+agent-workspace 构建在 Fedora bootc 与
+[Universal Blue](https://universal-blue.org/) 社区的工作之上；本项目是独立项目，
+与两者均无隶属关系。

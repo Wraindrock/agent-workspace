@@ -20,8 +20,9 @@ recovering, forking, upgrading and removing containers. It never needs root.
 * `bash` 4.4 or newer
 * an image that can be pulled - `ghcr.io/wraindrock/agent-workspace:latest` unless
   `image.env` or `--image` says otherwise
-* optional: `gum` for the nicer TUI. It is downloaded on first use when missing;
-  without it every prompt falls back to plain `read` questions.
+* optional: `gum` for the nicer TUI. It is offered for download on first
+  interactive use when missing; without it every prompt falls back to plain
+  `read` questions.
 
 ## The TUI
 
@@ -87,7 +88,7 @@ up and prints a one-time link:
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
-  open this once: http://127.0.0.1:34700/?token=...
+  open: http://127.0.0.1:34700/?token=...
   the token sets a 30-day cookie in that browser, so the link is not needed again
 ~~~
 
@@ -153,10 +154,10 @@ what you created (the TUI offers the same thing when you create several containe
 
 The image decides. `/usr/share/agent-workspace/manifest.json` inside the image
 carries an `agentCatalog` that lists, for every agent the build installed, its
-command, its label and the environment variable that holds its credential. The
-installer reads that catalog from the image (`./install.sh --help-agents`, which
-runs without an engine), and
-falls back to a built-in table when the image cannot be inspected. Turning an agent
+command, its label and the environment variable that holds its credential.
+`./install.sh --help-agents` prints the installer's built-in table and needs no
+engine. When a container image can be inspected, the image's catalog is merged
+over that table, so the menu picks up agents the build added. Turning an agent
 on or off is a build-time decision: `config/agents.conf` (see [agents.md](agents.md)).
 
 ## Credentials
@@ -178,15 +179,17 @@ Nothing is baked into an image, and nothing lands in the workspace or in a snaps
 | `~/.local/share/agent-workspace/containers/<name>/meta.history` | one line per lifecycle event |
 | `~/.local/share/agent-workspace/snapshots/<name>/<id>/` | `meta` plus `home.tar.gz` (see [rollback.md](rollback.md)) |
 
-`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. Containers created here carry the
-label `agent-workspace.manager=install.sh`, which is how `list` and `doctor` know
-which containers are theirs.
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` are honoured. `list`, `doctor` and `remove`
+work from the host state directory, not from the engine. Containers created here
+also carry the label `agent-workspace.manager=install.sh`, which engine-side
+checks use to recognise them - for example when deciding whether a snapshot
+image is still in use.
 
 ## Doctor
 
-`install.sh doctor` checks the engine, the recorded containers and their volumes, the
-default image, the credential files (they must be mode `600`) and the snapshot
-archives (they must be readable tarballs), and for containers created with a web UI,
+`install.sh doctor` checks the engine, the recorded containers and their volumes, each
+container's recorded run image, the credential files (they must be mode `600`) and the
+snapshot archives (they must be readable tarballs), and for containers created with a web UI,
 that the host port is still published. It never changes anything; it is the check to
 run before you need a rollback. `--strict` exits non-zero when anything is
 wrong, which is what the test suite uses.
