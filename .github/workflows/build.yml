@@ -75,6 +75,16 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/actionlint" --version
 
+      - name: Install just
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/just.tar.gz \
+            https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/just.tar.gz -C "$HOME/.local/bin" just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/just" --version
+
       - name: Lint
         run: bash tests/lint.sh
 
@@ -119,18 +129,24 @@ jobs:
       - name: Log in to the container registry
         if: github.event_name != 'pull_request'
         env:
-          # cosign (a go-containerregistry client) reads the Docker config, while
-          # podman writes its own containers/auth.json - so log in to both.
-          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
+          # Podman push/pull below pass --authfile explicitly, so the credentials never
+          # depend on where the default credential store happens to live.
+          AUTHFILE: ${{ runner.temp }}/auth.json
+          # cosign (a go-containerregistry client) reads the Docker config, so keep a
+          # second copy of the same credentials in the format that client expects.
+          DOCKER_AUTHFILE: ${{ runner.temp }}/docker-config/config.json
         run: |
           set -euo pipefail
-          mkdir -p "${DOCKER_CONFIG}"
           registry_host="${{ steps.meta.outputs.registry_host }}"
-          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
-            podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin
+          mkdir -p "$(dirname "${DOCKER_AUTHFILE}")"
           printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
             podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin \
-              --authfile "${DOCKER_CONFIG}/config.json"
+              --authfile "${AUTHFILE}"
+          cp "${AUTHFILE}" "${DOCKER_AUTHFILE}"
+          # keep podman's default store populated too, so a command that forgets
+          # --authfile still authenticates instead of quietly pushing anonymously
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
+            podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin
 
       - name: Preserve the currently published image as :previous
         if: github.event_name != 'pull_request'
@@ -138,11 +154,12 @@ jobs:
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.default_tag }}
+          AUTHFILE: ${{ runner.temp }}/auth.json
         run: |
           set -euo pipefail
-          if podman pull "${IMAGE}:${TAG}"; then
+          if podman pull --authfile "${AUTHFILE}" "${IMAGE}:${TAG}"; then
             podman tag "${IMAGE}:${TAG}" "${IMAGE}:previous"
-            podman push "${IMAGE}:previous"
+            podman push --authfile "${AUTHFILE}" "${IMAGE}:previous"
             echo "tagged the outgoing release as :previous"
           else
             echo "no published image yet, nothing to preserve"
@@ -178,21 +195,22 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
+          AUTHFILE: ${{ runner.temp }}/auth.json
         run: |
           set -euo pipefail
-          # ghcr.io occasionally answers a blob lookup with "403 (Forbidden)"
-          # while requesting a bearer token; the next attempt succeeds, so retry
-          # instead of failing an otherwise green release.
+          # The login step wrote the credentials to ${AUTHFILE}; pass it explicitly so
+          # that neither a stray DOCKER_CONFIG nor an empty default store can turn this
+          # into an anonymous push (which ghcr.io rejects with 403 while minting a token).
           push() {
             local tag="$1" attempt
-            for attempt in 1 2 3 4 5; do
-              if podman push "${IMAGE}:${tag}"; then
+            for attempt in 1 2 3; do
+              if podman push --authfile "${AUTHFILE}" "${IMAGE}:${tag}"; then
                 return 0
               fi
-              echo "push of ${tag} failed on attempt ${attempt}, retrying in 20s"
-              sleep 20
+              echo "push of ${tag} failed on attempt ${attempt}, retrying in 15s"
+              sleep 15
             done
-            echo "push of ${tag} failed after 5 attempts"
+            echo "push of ${tag} failed after 3 attempts"
             return 1
           }
           while read -r tag; do
@@ -213,7 +231,12 @@ jobs:
           DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
-          digest="$(podman image inspect "${IMAGE}:${TAG}" --format '{{index .RepoDigests 0}}')"
+          digest="$(podman image inspect --format json "${IMAGE}:${TAG}" \
+            | jq -r '.[0].RepoDigests[0] // empty')"
+          if [[ -z "${digest}" ]]; then
+            echo "no published digest recorded for ${IMAGE}:${TAG}" >&2
+            exit 1
+          fi
           echo "signing ${digest}"
           if [[ -n "${SIGNING_SECRET}" ]]; then
             printf '%s' "${SIGNING_SECRET}" > "$RUNNER_TEMP/cosign.key"
