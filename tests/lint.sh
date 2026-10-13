@@ -87,6 +87,13 @@ for agent in $agents; do
   fi
 done
 
+echo "image.env"
+if bash -c 'set -euo pipefail; . ./image.env; [ -n "${IMAGE_NAME}" ] && [ -n "${BASE_IMAGE}" ]'; then
+  pass "image.env is sourceable by bash and defines IMAGE_NAME and BASE_IMAGE"
+else
+  fail "image.env cannot be sourced by bash (quote values that contain spaces)"
+fi
+
 echo "required files"
 for required in Containerfile Justfile image.env LICENSE README.md docs/architecture.md docs/rollback.md; do
   if [[ -e "$required" ]]; then
