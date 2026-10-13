@@ -48,8 +48,11 @@ enable_unit() {
 # Package helpers (Fedora / dnf5)
 # ---------------------------------------------------------------------------
 # rpm_installed tells whether a package name is already present in the image.
+# Virtual provides count: `nodejs` is satisfied by nodejs22 and `zlib-devel`
+# by zlib-ng-compat-devel, and requesting those names again is pointless.
 rpm_installed() {
-  rpm -q "$1" >/dev/null 2>&1
+  rpm -q "$1" >/dev/null 2>&1 && return 0
+  rpm -q --whatprovides "$1" >/dev/null 2>&1
 }
 
 # install_rpms installs a required package set; failure aborts the build.
@@ -82,7 +85,7 @@ install_rpms() {
   # A required package that silently disappears between releases must be
   # visible in the build log instead of failing later at runtime.
   for pkg in "${pending[@]}"; do
-    rpm_installed "$pkg" || warn "required package is still missing: ${pkg}"
+    rpm_installed "$pkg" || warn "required package is not installed: ${pkg}"
   done
 }
 
@@ -120,9 +123,14 @@ retry() {
 }
 
 # npm_install_global installs one or more npm packages into the image-wide
-# prefix so every user on the system can run them.
+# prefix so every user on the system can run them. npm's default prefix is
+# /usr/local, which may not exist yet on an ostree base image.
 npm_install_global() {
   require_command npm
+  local prefix
+  prefix="$(npm config get prefix 2>/dev/null || true)"
+  [[ -n "${prefix}" ]] || prefix=/usr/local
+  install -d -m 0755 "${prefix}/bin" "${prefix}/lib" 2>/dev/null || true
   log "npm install -g: $*"
   retry 3 npm install --global --no-fund --no-audit --loglevel=error "$@"
 }
@@ -130,6 +138,7 @@ npm_install_global() {
 # pipx_install installs a Python application into /opt/pipx, exposed to all users.
 pipx_install() {
   require_command pipx
+  install -d -m 0755 /opt/pipx /usr/local/bin
   log "pipx install: $*"
   PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin retry 3 pipx install --force "$@"
 }
