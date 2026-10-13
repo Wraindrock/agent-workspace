@@ -33,8 +33,9 @@ bash tests/smoke.sh localhost/agent-workspace:dev
 ~~~
 
 `tests/lint.sh` is the same check CI runs on every pull request, and it degrades
-gracefully: `shellcheck`, `jq` and `pyyaml` are used when present, skipped when
-not.
+gracefully: `shellcheck`, `actionlint`, `jq` and `pyyaml` are used when present,
+skipped when not. The build workflow installs the pinned `actionlint`, so a
+workflow edit that uses an unavailable context fails in CI before any build.
 
 ## Adding a module
 

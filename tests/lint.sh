@@ -42,6 +42,23 @@ else
   pass "shellcheck not installed, skipped"
 fi
 
+echo "actionlint"
+if command -v actionlint >/dev/null 2>&1; then
+  workflows=()
+  while IFS= read -r wf; do workflows+=("$wf"); done < <(
+    find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) | sort
+  )
+  if [[ "${#workflows[@]}" -eq 0 ]]; then
+    pass "no workflow files to check"
+  elif actionlint "${workflows[@]}"; then
+    pass "actionlint"
+  else
+    fail "actionlint (see diagnostics above)"
+  fi
+else
+  pass "actionlint not installed, skipped"
+fi
+
 echo "module contract"
 shopt -s nullglob
 for dir in build_files/modules/*/; do

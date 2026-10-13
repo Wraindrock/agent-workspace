@@ -29,9 +29,6 @@ concurrency:
 
 env:
   IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
-  # cosign (a go-containerregistry client) reads the Docker config, while podman
-  # writes its own containers/auth.json - so log in to both below.
-  DOCKER_CONFIG: ${{ runner.temp }}/docker-config
 
 jobs:
   build:
@@ -67,6 +64,16 @@ jobs:
             echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/actionlint" --version
 
       - name: Lint
         run: bash tests/lint.sh
@@ -111,6 +118,10 @@ jobs:
       # ------------------------------------------------------------------
       - name: Log in to the container registry
         if: github.event_name != 'pull_request'
+        env:
+          # cosign (a go-containerregistry client) reads the Docker config, while
+          # podman writes its own containers/auth.json - so log in to both.
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
           mkdir -p "${DOCKER_CONFIG}"
@@ -184,6 +195,7 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.default_tag }}
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
           digest="$(podman image inspect "${IMAGE}:${TAG}" --format '{{index .RepoDigests 0}}')"
@@ -203,6 +215,7 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.default_tag }}
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+          DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
           if [[ -n "${SIGNING_SECRET}" ]]; then
