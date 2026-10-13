@@ -26,7 +26,12 @@ export DEEPSEEK_API_KEY="sk-test-dsh-key"
 
 BIN="$WORK/bin"
 BIN_DOCKER="$WORK/bin-docker"
-mkdir -p "$BIN" "$BIN_DOCKER" "$HOME" "$WORKSPACE_ROOT" "$FAKE_ENGINE_STATE"
+# A PATH that offers the everyday tools but no container engine at all. The
+# engine selection tests build on this instead of on /usr/bin, so they never
+# pick up a real podman or docker just because the host (or a CI runner) has
+# one installed.
+BIN_NOSH="$WORK/bin-nosh"
+mkdir -p "$BIN" "$BIN_DOCKER" "$BIN_NOSH" "$HOME" "$WORKSPACE_ROOT" "$FAKE_ENGINE_STATE"
 
 # make_engine_wrapper DIR NAME: a podman/docker stand-in that delegates to the fake
 make_engine_wrapper() {
@@ -43,16 +48,16 @@ make_engine_wrapper "$BIN" docker
 make_engine_wrapper "$BIN_DOCKER" docker
 
 export PATH="$BIN:$PATH"
-DOCKER_ONLY_PATH="$BIN_DOCKER:/usr/bin:/bin"
 
-# a PATH with the core utilities but no container engine at all
-BIN_NOSH="$WORK/bin-nosh"
-mkdir -p "$BIN_NOSH"
 for tool in bash sh env cat sed grep tr head tail sort date dirname basename mkdir \
-  rm cp mv chmod tar find ls cut awk expr uname id sleep touch wc; do
+  rm cp mv chmod install tar find ls cut awk expr uname id sleep touch wc ln du df \
+  mktemp uniq tee sha256sum realpath readlink stat hostname seq which; do
   tool_path="$(command -v "$tool" 2>/dev/null || true)"
   [[ -n "$tool_path" ]] && ln -sf "$tool_path" "$BIN_NOSH/$tool"
 done
+
+# a PATH that offers docker and nothing else, for the engine selection tests
+DOCKER_ONLY_PATH="$BIN_DOCKER:$BIN_NOSH"
 
 PASS=0
 FAIL=0
@@ -386,6 +391,10 @@ contains "the unmanaged container is reported" "no container named" "$RUN_OUT"
 
 # =========================================================================
 echo "engine selection"
+# guard: this PATH must offer docker and nothing else, even on a host that has
+# a real podman or docker installed
+is "the docker-only PATH has no podman" "" \
+  "$(env PATH="$DOCKER_ONLY_PATH" sh -c 'command -v podman || true')"
 run create --engine docker --agent dsh --name podd --yes
 is "--engine docker exits 0" 0 "$RUN_STATUS"
 is "the container records docker" docker "$(meta_key podd ENGINE)"
