@@ -12,19 +12,17 @@ failures=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  fail %s\n' "$1"; failures=$((failures + 1)); }
 
-sha_files=()
-while IFS= read -r file; do sha_files+=("$file"); done < <(
+# bash scripts get a syntax check and, when available, shellcheck.
+# The Justfile is not a shell script and is deliberately not listed here.
+shell_files=()
+while IFS= read -r file; do shell_files+=("$file"); done < <(
   find . -path ./.git -prune -o -type f -name '*.sh' -print | sort
 )
 # the runtime CLI is a bash script without the .sh suffix
-[[ -f runtime/bin/agent-workspace ]] && sha_files+=(runtime/bin/agent-workspace)
-sha_files+=(Justfile)
+[[ -f runtime/bin/agent-workspace ]] && shell_files+=(runtime/bin/agent-workspace)
 
 echo "shell syntax"
-for file in "${sha_files[@]}"; do
-  if [[ "$file" == "Justfile" ]]; then
-    continue
-  fi
+for file in "${shell_files[@]}"; do
   if bash -n "$file"; then
     pass "$file"
   else
@@ -34,10 +32,10 @@ done
 
 if command -v shellcheck >/dev/null 2>&1; then
   echo "shellcheck"
-  if shellcheck --severity=warning --external-sources "${sha_files[@]}" 2>/dev/null; then
+  if shellcheck --severity=warning --external-sources "${shell_files[@]}"; then
     pass "shellcheck"
   else
-    fail "shellcheck"
+    fail "shellcheck (see diagnostics above)"
   fi
 else
   echo "shellcheck"
@@ -103,14 +101,13 @@ for required in Containerfile Justfile image.env LICENSE README.md docs/architec
   fi
 done
 
-echo "json"
-if command -v jq >/dev/null 2>&1; then
-  for json_file in .github/renovate.json5; do
-    [[ -e "$json_file" ]] || continue
-  done
-  pass "json files parsed"
+echo "config formats"
+# renovate.json5 is JSON5 (comments and trailing commas), so jq cannot parse it.
+# The strict YAML/JSON files are validated in the next section.
+if [[ -s .github/renovate.json5 ]]; then
+  pass ".github/renovate.json5 present (JSON5, not validated by jq)"
 else
-  pass "jq not installed, skipped"
+  fail ".github/renovate.json5 missing or empty"
 fi
 
 echo "yaml"

@@ -1,3 +1,4 @@
+# shellcheck shell=sh
 # agent-workspace shell integration.
 # Keep this file side-effect free apart from PATH and a couple of variables.
 
