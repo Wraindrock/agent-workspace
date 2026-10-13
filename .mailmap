@@ -1,0 +1,10 @@
+# Canonical author identity for this repository.
+#
+# This is display-only: git rewrites the name and address it *reports* for a
+# commit, never the commit object itself, so every published revision keeps its
+# hash (and so do the image tags that embed those hashes). History is
+# deliberately not rewritten -- see CONTRIBUTING.md, "Commit messages".
+#
+# Proper Name <proper@address> Commit Name <commit@address>
+Wraindrock <Wraindrock@users.noreply.github.com> <wraindrock@users.noreply.github.com>
+Wraindrock <Wraindrock@users.noreply.github.com> Ian <ian@users.noreply.github.com>

@@ -222,6 +222,59 @@ else
   fail ".github/renovate.json5 missing or empty"
 fi
 
+echo "ci coverage"
+# README.md promises that every pull request runs all three test scripts, so
+# assert it here: a script CI silently stops running has to fail the lint
+# instead of quietly drifting away from the documentation.
+for script in tests/lint.sh tests/install.sh tests/smoke.sh; do
+  if grep -qF -- "$script" .github/workflows/build.yml; then
+    pass "build.yml runs ${script}"
+  else
+    fail "build.yml does not run ${script}"
+  fi
+done
+
+echo "image labels"
+# CI publishes the image, the Justfile builds it locally, and both are supposed
+# to describe the same picture. When they drifted, the published image lost the
+# Artifact Hub logo and called a commit sha its "version". Comparing the label
+# keys both paths pass keeps that honest without pinning their values.
+label_keys() {
+  grep -oE -- '--label "[^"]+=' "$1" | sed 's/--label "//; s/=$//' | sort -u || true
+}
+justfile_labels="$(label_keys Justfile)"
+ci_labels="$(label_keys .github/workflows/build.yml)"
+if [[ -n "$justfile_labels" && "$justfile_labels" == "$ci_labels" ]]; then
+  pass "Justfile and build.yml pass the same image labels"
+else
+  fail "image labels differ between Justfile and build.yml"
+  diff <(printf '%s\n' "$justfile_labels") <(printf '%s\n' "$ci_labels") || true
+fi
+if grep -qE -- '--label "org\.opencontainers\.image\.version=\$\{\{ steps\.meta\.outputs\.git_sha' .github/workflows/build.yml; then
+  fail "build.yml labels the image version with a git sha (revision is the sha)"
+else
+  pass "build.yml labels the image version with the tag, not a git sha"
+fi
+
+echo "author identity"
+# The repository authors everything as one identity. History is deliberately
+# not rewritten for the older spellings (the published image tags embed commit
+# hashes), so .mailmap is the whole of the fix and this is what must keep
+# holding. check-mailmap works on any checkout depth, unlike git shortlog.
+canonical='Wraindrock <Wraindrock@users.noreply.github.com>'
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  for spelling in '<wraindrock@users.noreply.github.com>' 'Ian <ian@users.noreply.github.com>'; do
+    mapped="$(git check-mailmap "$spelling" 2>/dev/null || true)"
+    if [[ "$mapped" == "$canonical" ]]; then
+      pass ".mailmap folds ${spelling} into the canonical author"
+    else
+      fail ".mailmap leaves ${spelling} as [${mapped:-nothing}]"
+    fi
+  done
+else
+  pass "not a git checkout, skipped the author identity check"
+fi
+
 echo "yaml"
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
   for yaml_file in .github/workflows/*.yml .github/dependabot.yml .github/ISSUE_TEMPLATE/*.yml; do

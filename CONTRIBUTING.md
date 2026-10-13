@@ -34,10 +34,12 @@ bash tests/smoke.sh localhost/agent-workspace:dev
 ~~~
 
 `tests/lint.sh` is the same check CI runs on every pull request, and it degrades
-gracefully: `shellcheck`, `actionlint`, `just`, `jq` and `pyyaml` are used when
+gracefully: `shellcheck`, `actionlint`, `just` and `pyyaml` are used when
 present, skipped when not. Documentation counts as part of a change: the lint
-fails when a required doc file is missing, so keep the module and agent tables in
-`README.md` and `docs/` matching the code. `tests/install.sh` drives `install.sh` against the fake container engine in
+fails when any file in its fixed required list is missing, and it checks that
+`config/modules.conf` and `config/agents.conf` only reference real modules and
+recipes. Keep the module and agent tables in `README.md` and `docs/` matching the
+code. `tests/install.sh` drives `install.sh` against the fake container engine in
 `tests/fixtures/fake-engine.sh`, so the host installer is covered in CI without
 podman, docker or root. The build workflow installs the pinned `actionlint`
 and `just`, so a workflow edit that uses an unavailable context - or a Justfile
@@ -46,8 +48,9 @@ that no longer parses - fails in CI before any build.
 ## Adding a module
 
 1. `build_files/modules/<NN-name>/` with `module.env` and `install.sh`.
-2. `MODULE_NAME` must equal the directory name, and `install.sh` must define
-   `install_module()` with no other side effects at load time.
+2. `MODULE_NAME` must equal the directory name, `module.env` must be sourceable
+   by bash, and `install.sh` must be executable and do its work at the top level
+   (nothing sources it).
 3. Pin the repository-wide decision in `config/modules.conf`.
 4. Document it in the module table in `README.md` and `docs/modules.md`.
 
@@ -60,14 +63,15 @@ that no longer parses - fails in CI before any build.
 2. Add `<name>=1` (or `=0`) to `config/agents.conf`.
 3. `just check` verifies the reference resolves and that the recipe declares all
    three fields; the smoke test verifies every binary listed in the image's
-   `agentCatalog` - and therefore every entry the installer offers - exists in
-   the built image.
+   `agentCatalog` exists in the built image.
 
 ## Changing the image identity
 
 `image.env` is the single source of truth for name, organisation, description,
-default tag and base image. The Justfile, the Containerfile and both workflows
-read it. If you need a new parameter there, plumb it through all four.
+default tag and base image. The Justfile and `.github/workflows/build.yml` read
+it; the Containerfile only declares the matching build arguments. If you need a
+new parameter there, plumb it through the Justfile, the workflow and the
+Containerfile ARGs.
 
 ## Third-party patches
 
@@ -110,6 +114,13 @@ chore(ci): pin cosign-installer
 Conventional-commit prefixes (`feat`, `fix`, `docs`, `chore`, `refactor`,
 `test`) are used by the renovate config for grouping; keeping to them makes
 dependency pull requests readable.
+
+Commits are authored as `Wraindrock <Wraindrock@users.noreply.github.com>`, which
+is what this repository's local git config sets. A few early commits carry the
+same person under other spellings (`<wraindrock@...>`, `Ian <ian@...>`), so
+`.mailmap` folds them into that one display identity. History is deliberately
+*not* rewritten for this: the published image tags embed commit hashes, and a
+rewrite would orphan every one of them.
 
 ## Reporting bugs and security issues
 
