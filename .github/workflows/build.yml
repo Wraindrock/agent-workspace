@@ -180,9 +180,24 @@ jobs:
           IMAGE: ${{ steps.meta.outputs.image }}
         run: |
           set -euo pipefail
+          # ghcr.io occasionally answers a blob lookup with "403 (Forbidden)"
+          # while requesting a bearer token; the next attempt succeeds, so retry
+          # instead of failing an otherwise green release.
+          push() {
+            local tag="$1" attempt
+            for attempt in 1 2 3 4 5; do
+              if podman push "${IMAGE}:${tag}"; then
+                return 0
+              fi
+              echo "push of ${tag} failed on attempt ${attempt}, retrying in 20s"
+              sleep 20
+            done
+            echo "push of ${tag} failed after 5 attempts"
+            return 1
+          }
           while read -r tag; do
             [[ -n "$tag" ]] || continue
-            podman push "${IMAGE}:${tag}"
+            push "$tag"
           done < "$RUNNER_TEMP/tags.txt"
 
       - name: Install cosign
