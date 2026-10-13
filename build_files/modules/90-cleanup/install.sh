@@ -9,8 +9,8 @@ find /var/log -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
 rm -rf /var/tmp/* 2>/dev/null || true
 
-# Remove the build state so it cannot be mistaken for runtime state.
-rm -rf "${STATE_DIR}"
+# The build state under ${STATE_DIR} is removed by build_files/build.sh after
+# it prints the build summary, so the summary can still report what was applied.
 
 # Directories that must exist at runtime even on a fresh /var.
 install -d -m 0755 /var/lib/agent-workspace/cache /var/lib/agent-workspace/sessions

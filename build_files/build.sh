@@ -114,14 +114,17 @@ run_modules() {
 }
 
 summarize() {
-  local count
-  count="$(wc -l < "${STATE_DIR}/modules.enabled" | tr -d ' ')"
+  local applied="${STATE_DIR}/modules.enabled" agents="${STATE_DIR}/agents.enabled"
   section "build summary"
-  log "modules applied: ${count}"
-  sed 's/^/  - /' "${STATE_DIR}/modules.enabled"
-  if [[ -s "${STATE_DIR}/agents.enabled" ]]; then
+  if [[ -s "${applied}" ]]; then
+    log "modules applied: $(wc -l < "${applied}" | tr -d ' ')"
+    sed 's/^/  - /' "${applied}"
+  else
+    log "modules applied: none"
+  fi
+  if [[ -s "${agents}" ]]; then
     log "agent harnesses installed:"
-    sed 's/^/  - /' "${STATE_DIR}/agents.enabled"
+    sed 's/^/  - /' "${agents}"
   else
     log "agent harnesses installed: none"
   fi
@@ -135,6 +138,9 @@ main() {
   install_runtime
   run_modules
   summarize
+  # /run is throwaway, but removing the state keeps the contract explicit:
+  # nothing in the image may depend on build-time state.
+  rm -rf "${STATE_DIR}"
 }
 
 main "$@"
