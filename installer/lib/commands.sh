@@ -359,7 +359,7 @@ cmd_web() {
     sleep 1
   done
 
-  ok "${agent} web UI is published on http://127.0.0.1/${port}/ (container port ${WEB_CONTAINER_PORT:-3080})"
+  ok "${agent} web UI is published on http://127.0.0.1:${port}/ (container port ${WEB_CONTAINER_PORT:-3080})"
   if [[ -n "$token" ]]; then
     msg "open: http://127.0.0.1:${port}/?token=${token}"
     msg "the first visit signs that browser in for 30 days; afterwards http://127.0.0.1:${port}/ is enough"

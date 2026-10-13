@@ -75,6 +75,12 @@ contains() { # contains LABEL NEEDLE HAYSTACK
     *) fail "$1 (missing [$2] in output)" ;;
   esac
 }
+lacks() { # lacks LABEL NEEDLE HAYSTACK -- the needle must not appear
+  case "$3" in
+    *"$2"*) fail "$1 (unexpected [$2] in output)" ;;
+    *) pass "$1" ;;
+  esac
+}
 exists() { # exists LABEL PATH
   if [[ -e "$2" ]]; then pass "$1"; else fail "$1 (missing $2)"; fi
 }
@@ -483,6 +489,9 @@ is "the engine resolves the published port" "127.0.0.1:${WEB_PORT}" \
 run web webbox
 is "web exits 0" 0 "$RUN_STATUS"
 contains "web prints the loopback URL" "http://127.0.0.1:${WEB_PORT}/" "$RUN_OUT"
+contains "web announces the published URL with its port" \
+  "http://127.0.0.1:${WEB_PORT}/ (container port" "$RUN_OUT"
+lacks "no URL collapses the port into the path" "127.0.0.1/${WEB_PORT}" "$RUN_OUT"
 contains "web prints the one-time token link" "?token=faketok3n" "$RUN_OUT"
 contains "web starts dsh web with the image overlay" \
   "dsh web --patch /usr/share/agent-workspace/dsh-web.yml --no-open" "$(engine_log)"
