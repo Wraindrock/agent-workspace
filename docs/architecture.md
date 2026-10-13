@@ -50,7 +50,7 @@ install_runtime               # runtime/lib -> /usr/lib/agent-workspace
                               # runtime/bin -> /usr/bin
 run_modules                   # build_files/modules/*/ in filename order
 summarize
-```
+~~~
 
 Each module is a directory with two files:
 
@@ -135,6 +135,29 @@ AGENT_WORKSPACE_LIB="$PWD/runtime/lib" ./runtime/bin/agent-workspace version
 The same binary is therefore safe in CI containers, in `podman run` sessions,
 and on a booted host - it reports what it is instead of assuming.
 
+## Publishing an agent's web UI
+
+`dsh web` refuses to bind anything but loopback, on purpose: the UI can run code, so
+`--host 0.0.0.0` is rejected by the CLI. A container's loopback is also not reachable
+from the host through a port mapping alone. The image therefore carries one overlay,
+`/usr/share/agent-workspace/dsh-web.yml`, which the installer passes as
+`dsh web --patch`. It replaces exactly one profile entry - `id: webserver` - with
+`host: 0.0.0.0` and `port: 3080`, so the UI listens on the container's own
+interfaces. A patch replaces the matched entry's `config` object as a whole, which is
+why both keys are present rather than only the host.
+
+The host side stays closed and boring: `create` publishes
+`127.0.0.1:<host port>:3080` and nothing else, and records the port with the
+container so `rollback`, `recover` and `upgrade` reproduce the same mapping.
+`install.sh web NAME` starts the UI as the agent user, waits for the container's
+published port to answer, reads the one-time token out of the UI's log, and prints the
+local URL; the first request from a browser trades that token for a 30-day cookie.
+
+Binding inside the container instead of joining the host network is deliberate: the
+container keeps its own network namespace, the mapping only ever touches host
+loopback, and anything wider (a LAN name, a reverse proxy, TLS) stays a host-side
+decision.
+
 ## System integration
 
 | File | Purpose |
@@ -183,7 +206,7 @@ dispatches, and one library per concern does the work.
 | `installer/lib/engine.sh` | podman/docker detection, the per-engine run flags, and a dry-run mode that prints commands instead of running them |
 | `installer/lib/state.sh` | where host state lives: `meta`, snapshots, and credential files |
 | `installer/lib/agents.sh` | the agent catalog, read from the image manifest and merged over the built-in table |
-| `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `enter`, `logs`, `snapshot`, `rollback`, `recover`, `fork`, `upgrade`, `remove`, `doctor` |
+| `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `enter`, `logs`, `snapshot`, `rollback`, `recover`, `fork`, `upgrade`, `web`, `remove`, `doctor` |
 
 | Decision | Made by |
 | --- | --- |

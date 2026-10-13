@@ -110,7 +110,7 @@ case "$cmd" in
     exit 0
     ;;
   run)
-    name=""; entrypoint=""; rm_flag=0; interactive=0; image=""; env_file=""
+    name=""; entrypoint=""; rm_flag=0; interactive=0; image=""; env_file=""; publish=""
     FAKE_MOUNTS=""
     command_args=()
     while [[ "$#" -gt 0 ]]; do
@@ -135,6 +135,7 @@ case "$cmd" in
           shift 2
           ;;
         --detach|-d|--privileged) shift ;;
+        --publish|-p) publish="$2"; shift 2 ;;
         --env-file) env_file="$2"; shift 2 ;;
         --label|--env|--hostname|--workdir|--restart|--systemd|--cgroupns|--tmpfs) shift 2 ;;
         -*) shift ;;
@@ -197,6 +198,8 @@ case "$cmd" in
     printf '%s\n' "${image:-unknown}" >"${dir}/image"
     # remember the credentials the container was started with
     if [[ -n "${env_file:-}" && -f "$env_file" ]]; then cp "$env_file" "${dir}/env"; fi
+    # remember published ports so "port" can resolve them like a real engine
+    if [[ -n "$publish" ]]; then printf '%s\n' "$publish" >"${dir}/publish"; fi
     printf '%s\n' "$name"
     exit 0
     ;;
@@ -235,8 +238,43 @@ case "$cmd" in
     printf 'no such container\n' >&2
     exit 1
     ;;
+  port)
+    # port NAME PORT[/tcp] resolves a published port to its host address
+    name="${1:-}"; req="${2:-}"; req="${req%%/*}"
+    dir="$(container_dir "$name")"
+    if [[ -f "${dir}/publish" ]]; then
+      IFS=':' read -r p_host p_hostport p_container <<<"$(cat "${dir}/publish")"
+      if [[ "${p_container:-}" == "$req" ]]; then printf '%s:%s\n' "${p_host:-127.0.0.1}" "$p_hostport"; exit 0; fi
+    fi
+    printf 'no such published port\n' >&2
+    exit 1
+    ;;
   exec)
     printf 'fake exec: %s\n' "$*" >>"$STATE/log"
+    name=""; script=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --user|--env|--workdir) shift 2 ;;
+        -*) shift ;;
+        *) if [[ -z "$name" ]]; then name="$1"; else script="$1"; fi; shift ;;
+      esac
+    done
+    dir="$(container_dir "$name")"
+    case "$script" in
+      *grep\ -o*)
+        [[ -f "${dir}/webtoken" ]] && cat "${dir}/webtoken"
+        exit 0
+        ;;
+      */dev/tcp/*)
+        # the installer probes the port this way to see whether the UI is up
+        [[ -f "${dir}/webtoken" ]] && exit 0
+        exit 1
+        ;;
+      *dsh\ web*)
+        printf 'dsh web: http://127.0.0.1:3080/?token=faketok3n\n' >"${dir}/webtoken"
+        exit 0
+        ;;
+    esac
     exit 0
     ;;
   logs)

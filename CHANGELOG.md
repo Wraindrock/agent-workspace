@@ -20,7 +20,7 @@ it as isolated agent containers.
   creates named agent containers on `podman` or `docker`, plus the
   non-interactive subcommands `create`, `list`, `start`, `stop`, `restart`,
   `enter`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`,
-  `upgrade`, `remove` and `doctor`.
+  `upgrade`, `web`, `remove` and `doctor`.
 - Container lifecycle and rollback, entirely on the host: `snapshot` commits the
   container filesystem to a local image and archives `/home/agent`; `rollback`
   recreates the container from a snapshot; `recover` starts, restores or rebuilds
@@ -37,6 +37,17 @@ it as isolated agent containers.
   `/run`, `/tmp` as tmpfs.
 - `Containerfile` with a `ctx` build stage, OCI/Artifact Hub labels, a single
   pipeline `RUN`, and `bootc container lint` as the final gate.
+- The agent's web UI on your host: `./install.sh web NAME` starts `dsh web` inside the
+  container as the agent user and prints a one-time `?token=` link for
+  `http://127.0.0.1:<port>/` (the token sets a 30-day cookie). The host port is chosen
+  when the container is created and recorded with it, so `rollback`, `recover` and
+  `upgrade` keep working links; `--web-port N` picks one, `--no-web` leaves the
+  container unpublished. Publishing is always `127.0.0.1:<host port>:3080`, never a
+  network interface.
+- `/usr/share/agent-workspace/dsh-web.yml` in the image: the `dsh` overlay that lets
+  the web UI bind the container's own interface, since `dsh` refuses anything but
+  loopback by default. It is passed as `--patch` and replaces only the `webserver`
+  entry (`host` and `port`).
 - The module pipeline: `build_files/build.sh` plus `build_files/lib/common.sh`,
   with three-level enable resolution (`IMAGE_MODULES` build argument,
   `config/modules.conf`, `MODULE_ENABLED_DEFAULT`).

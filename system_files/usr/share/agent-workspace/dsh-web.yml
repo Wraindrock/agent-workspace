@@ -1,0 +1,17 @@
+# agent-workspace: make the DSH web UI reachable from the host.
+#
+# "dsh web" binds 127.0.0.1 inside the container by default. That is unreachable
+# even when the container publishes a port, because the engine forwards host
+# traffic to the container's eth0, not to its loopback. This overlay switches the
+# bind host to 0.0.0.0 *inside the container's own network namespace* and pins
+# the port the installer publishes (see installer/lib/commands.sh, create_container_from).
+#
+# The webserver plugin's schema requires both host and port, and a patch replaces
+# the whole "config" object of the matched entry, so both keys are spelled out.
+#
+# Used by:  ./install.sh web <name>
+#           (dsh web --patch /usr/share/agent-workspace/dsh-web.yml --no-open)
+- id: webserver
+  config:
+    host: 0.0.0.0
+    port: 3080

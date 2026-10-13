@@ -164,6 +164,27 @@ scratch      opencode  ephemeral
 只跑一条命令，退出即删除。agent 菜单直接读镜像自己的 manifest，所以永远与构建一致。
 完整说明见 [docs/containers.md](docs/containers.md)。
 
+## 在宿主机打开 agent 的 web UI
+
+DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安装器把它发布到你的回环：
+
+~~~bash
+./install.sh web dsh-box
+~~~
+
+该命令在容器内以 agent 用户启动 `dsh web`，等它起来后打印一个一次性链接：
+
+~~~
+✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
+  open this once: http://127.0.0.1:34700/?token=...
+~~~
+
+第一次访问会在浏览器里写入 30 天有效的 cookie，因此 token 只需要用一次。宿主端口在
+创建容器时选定并跟容器一起记录，所以 `rollback`、`recover`、`upgrade` 都沿用同一个
+地址，`fork` 出的新容器会另行分配。`./install.sh create --web-port 8080` 可以自己指定
+端口，`--no-web` 则完全不发布端口。映射始终是 `127.0.0.1:<宿主端口>:3080`，从网络上
+访问不到。细节见 [docs/containers.md](docs/containers.md)。
+
 ## 快照、回滚与分叉
 
 回滚的单位是容器，不是你的宿主系统：

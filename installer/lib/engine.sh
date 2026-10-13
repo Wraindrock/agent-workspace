@@ -86,6 +86,18 @@ eng_labeled_containers() {
   "$ENGINE_BIN" ps --all --filter "label=${LABEL_KEY}=${LABEL_VALUE}" --format '{{.Names}}' 2>/dev/null || true
 }
 
+# eng_host_port NAME PORT prints the host address a published container port is
+# bound to, or nothing when the port is not published. Used by ./install.sh web
+# and by doctor, so a container created before the web support existed still
+# reports the address the engine actually assigned.
+eng_host_port() {
+  local name="$1" port="$2" out=""
+  # a container with no published port makes the engine exit non-zero; keep the
+  # lookup non-fatal under errexit and answer with an empty string instead
+  out="$("$ENGINE_BIN" port "$name" "${port}/tcp" 2>/dev/null)" || true
+  printf '%s\n' "${out%%$'\n'*}"
+}
+
 # --- mutations -------------------------------------------------------------
 
 eng_pull()        { run_engine pull "$@"; }

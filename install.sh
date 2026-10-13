@@ -41,6 +41,13 @@ AGENT_USER="agent"
 IMAGE=""
 ENGINE_REQUEST="auto"
 
+# The agent web UI is published on the host loopback only. These knobs are read
+# by the library functions (installer/lib/commands.sh); see ./install.sh web NAME.
+WEB_ENABLED="${WEB_ENABLED:-1}"
+WEB_CONTAINER_PORT="${WEB_CONTAINER_PORT:-3080}"
+WEB_PORT_BASE="${WEB_PORT_BASE:-3080}"
+WEB_HOST_PORT_REQUEST=""
+
 NO_TUI=0
 DRY_RUN=0
 NO_PULL=0
@@ -107,6 +114,7 @@ agent-workspace installer
   ./install.sh list            list the containers created by this installer
   ./install.sh enter NAME      run the container's agent interactively
   ./install.sh shell NAME      open a login shell inside a container
+  ./install.sh web NAME        start the agent's web UI and print its host URL
   ./install.sh logs NAME       show the container log
   ./install.sh start|stop|restart NAME
   ./install.sh snapshot NAME [--label TEXT] [--keep N]
@@ -134,6 +142,11 @@ create options
                         name agent [mode] [workspace]
   --save FILE         write the created containers back out in that format
 
+create options for the agent web UI
+  --web-port N        host loopback port to publish (default: first free port
+                      at or above 3080)
+  --no-web            do not publish a web UI port for these containers
+
 global options
   --engine auto|podman|docker   which engine to use (default: auto)
   --image REF                   image to run (default: from image.env)
@@ -157,6 +170,26 @@ USAGE
 }
 
 # --- configuration helpers -------------------------------------------------
+
+# free_web_port BASE prints the first host port at or above BASE that nothing is
+# listening on, so a second container does not collide with the first. Without ss
+# the base port is used as-is.
+free_web_port() {
+  local base="${1:-3080}" used candidate i
+  if ! have_cmd ss; then
+    printf '%s' "$base"
+    return 0
+  fi
+  used="$(ss -H -ltn 2>/dev/null | awk '{print $4}' | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' || true)"
+  for ((i = 0; i < 200; i++)); do
+    candidate=$((base + i))
+    if ! grep -qx "$candidate" <<<"$used"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  printf '%s' "$base"
+}
 
 env_value() {
   local key="${1}" file="${2}" value=""
@@ -312,6 +345,13 @@ create_specs() {
     fi
     create_container_from "$name" "$agent" "$mode" "$workspace" "$IMAGE"
     ok "created ${name} (agent ${agent}, mode ${mode})"
+    if [[ "${DRY_RUN:-0}" -eq 0 && "$(state_get "$name" WEB)" == "1" ]]; then
+      local web_port
+      web_port="$(state_get "$name" WEB_HOST_PORT)"
+      if [[ -n "$web_port" ]]; then
+        msg "web UI: install.sh web ${name}  →  http://127.0.0.1:${web_port}/"
+      fi
+    fi
   done
 }
 
@@ -416,6 +456,7 @@ tui_home() {
       "List containers" \
       "Enter a container (run its agent)" \
       "Open a shell in a container" \
+      "Open the agent's web UI" \
       "Show the log of a container" \
       "Start / restart a container" \
       "Stop a container" \
@@ -433,6 +474,7 @@ tui_home() {
       "List containers") cmd_list ;;
       "Enter a container (run its agent)") name="$(pick_container "Which container?")" && cmd_enter "$name" ;;
       "Open a shell in a container") name="$(pick_container "Which container?")" && cmd_enter "$name" /bin/bash --login ;;
+      "Open the agent's web UI") name="$(pick_container "Which container?")" && cmd_web "$name" ;;
       "Show the log of a container") name="$(pick_container "Which container?")" && cmd_logs "$name" ;;
       "Start / restart a container") name="$(pick_container "Which container?")" && cmd_restart "$name" ;;
       "Stop a container") name="$(pick_container "Which container?")" && cmd_stop "$name" ;;
@@ -482,6 +524,7 @@ dispatch() {
     restart) need_arg; cmd_restart "${ARGS[1]}" ;;
     enter) need_arg; cmd_enter "${ARGS[1]}" ;;
     shell) need_arg; cmd_enter "${ARGS[1]}" /bin/bash --login ;;
+    web) need_arg; cmd_web "${ARGS[1]}" ;;
     logs) need_arg; cmd_logs "${ARGS[1]}" ;;
     snapshot) need_arg; cmd_snapshot "${ARGS[1]}" "${SNAPSHOT_LABEL:-manual}" ;;
     snapshots) need_arg; cmd_snapshots "${ARGS[1]}" ;;
@@ -554,6 +597,9 @@ parse_args() {
       --env) EXTRA_ENVS+=("${2}"); shift 2 ;;
       --file) DECL_FILE="${2}"; shift 2 ;;
       --save) SAVE_FILE="${2}"; shift 2 ;;
+      --web-port) WEB_HOST_PORT_REQUEST="${2}"; shift 2 ;;
+      --web-port=*) WEB_HOST_PORT_REQUEST="${1#*=}"; shift ;;
+      --no-web) WEB_ENABLED=0; shift ;;
       --list) LEGACY_LIST=1; shift ;;
       --verify) LEGACY_VERIFY=1; shift ;;
       --remove) LEGACY_REMOVE=1; shift ;;
@@ -576,6 +622,10 @@ main() {
   [[ -n "$IMAGE" ]] || IMAGE="$(default_image)"
   AGENT_USER="$(env_value AGENT_USER "${INSTALLER_HOME}/image.env")"
   AGENT_USER="${AGENT_USER:-agent}"
+
+  if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]] && [[ ! "$WEB_HOST_PORT_REQUEST" =~ ^[0-9]+$ ]]; then
+    die "--web-port expects a port number, got '${WEB_HOST_PORT_REQUEST}'"
+  fi
 
   if [[ "${SHOW_AGENTS:-0}" -eq 1 ]]; then
     # the built-in catalogue does not need an engine, and the image catalogue

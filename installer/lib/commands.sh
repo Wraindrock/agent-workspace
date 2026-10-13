@@ -70,9 +70,31 @@ confirm() {
 # create_container_from NAME AGENT MODE WORKSPACE IMAGE_REF [DECLARED_IMAGE]
 create_container_from() {
   local name="${1}" agent="${2}" mode="${3}" workspace="${4}" image_ref="${5}" declared="${6:-${5}}"
-  local env_file volume
+  local env_file volume web web_port
   env_file="$(env_file_for "$name")"
   volume="$(volume_name "$name")"
+
+  # The agent web UI is published on the host loopback only. The port is stored in
+  # the container state so rollback, recover and upgrade republish the same port;
+  # a fork has a new name and therefore gets a fresh port.
+  web="${WEB_ENABLED:-1}"
+  web_port=""
+  if state_exists "$name"; then
+    web="$(state_get "$name" WEB)"
+    [[ -n "$web" ]] || web="${WEB_ENABLED:-1}"
+    web_port="$(state_get "$name" WEB_HOST_PORT)"
+  fi
+  if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
+    web=1
+    web_port="${WEB_HOST_PORT_REQUEST}"
+  elif [[ "$web" == "1" && -z "$web_port" ]]; then
+    web_port="$(free_web_port "${WEB_PORT_BASE:-3080}")"
+  fi
+  if [[ "$mode" != "persistent" ]]; then
+    # an ephemeral container exits with its command, so a web UI would die with it
+    web=0
+    web_port=""
+  fi
 
   case "$mode" in
     persistent)
@@ -88,6 +110,9 @@ create_container_from() {
       args+=(--workdir /workspace)
       args+=(--env "AGENT_WORKSPACE_AGENT=$agent")
       [[ -f "$env_file" ]] && args+=(--env-file "$env_file")
+      if [[ "$web" == "1" && -n "$web_port" ]]; then
+        args+=(--publish "127.0.0.1:${web_port}:${WEB_CONTAINER_PORT:-3080}")
+      fi
       args+=("$image_ref")
       run_engine "${args[@]}"
       if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
@@ -99,6 +124,9 @@ create_container_from() {
       fi
       ;;
     ephemeral)
+      if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
+        warn "--web-port is ignored for ephemeral containers; they have no long-running web UI"
+      fi
       local -a eargs=(run --rm --name "$name" --hostname "$name")
       if [[ -t 0 ]] && [[ -t 1 ]]; then
         eargs+=(--interactive --tty)
@@ -128,6 +156,10 @@ create_container_from() {
   state_set "$name" VOLUME "$volume"
   state_set "$name" IMAGE "$declared"
   state_set "$name" RUN_IMAGE "$image_ref"
+  state_set "$name" WEB "$web"
+  if [[ "$mode" == "persistent" && -n "$web_port" ]]; then
+    state_set "$name" WEB_HOST_PORT "$web_port"
+  fi
   state_set "$name" CREATED "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   state_record_event "$name" "created from ${image_ref}"
 }
@@ -135,13 +167,13 @@ create_container_from() {
 # --- queries ---------------------------------------------------------------
 
 cmd_list() {
-  local names name agent mode engine status snapshots
+  local names name agent mode engine status snapshots web
   names="$(state_list)"
   if [[ -z "$names" ]]; then
     msg "no containers yet; create one with: install.sh create"
     return 0
   fi
-  printf '%-18s %-10s %-11s %-7s %-9s %s\n' NAME AGENT MODE ENGINE STATE SNAPSHOTS
+  printf '%-18s %-10s %-11s %-8s %-9s %-6s %s\n' NAME AGENT MODE ENGINE STATE WEB SNAPSHOTS
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     state_engine_soft "$name"
@@ -154,7 +186,14 @@ cmd_list() {
       status="missing"
     fi
     snapshots="$(snapshot_list "$name" | grep -c . || true)"
-    printf '%-18s %-10s %-11s %-7s %-9s %s\n' "$name" "$agent" "$mode" "$engine" "$status" "$snapshots"
+    web="$(state_get "$name" WEB)"
+    if [[ "$web" == "1" ]]; then
+      web="$(state_get "$name" WEB_HOST_PORT)"
+      [[ -n "$web" ]] || web="-"
+    else
+      web="-"
+    fi
+    printf '%-18s %-10s %-11s %-8s %-9s %-6s %s\n' "$name" "$agent" "$mode" "$engine" "$status" "$web" "$snapshots"
   done <<<"$names"
 }
 
@@ -242,6 +281,90 @@ cmd_enter() {
     eng_exec "$name" "$@"
   else
     eng_exec "$name" "$(agent_binary_of "$(container_agent "$name")")"
+  fi
+}
+
+# --- agent web UI ----------------------------------------------------------
+
+# agent_web_command AGENT prints the in-container command that starts the agent's
+# web UI, or fails when this installer does not know how to open one.
+agent_web_command() {
+  case "${1:-}" in
+    dsh) printf 'dsh web --patch /usr/share/agent-workspace/dsh-web.yml --no-open' ;;
+    *) return 1 ;;
+  esac
+}
+
+# container_web_up NAME PORT succeeds when the port inside the container accepts
+# a connection. Bash's /dev/tcp keeps this independent of curl or nc, neither of
+# which is guaranteed to be in the image.
+container_web_up() {
+  local name="${1}" port="${2}"
+  "$ENGINE_BIN" exec "$name" /bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1
+}
+
+# cmd_web NAME starts the agent's web UI inside the container, waits for the
+# launch token and prints a one-time sign-in URL on the host loopback.
+cmd_web() {
+  local name="${1}" port webcmd token agent log_dir log_file running=0 i
+  require_container "$name"
+  state_engine "$name"
+  agent="$(container_agent "$name")"
+
+  if [[ "$(container_mode "$name")" != "persistent" ]]; then
+    die "'${name}' is an ephemeral container; its web UI would exit with the container"
+  fi
+  webcmd="$(agent_web_command "$agent")" || die "no web UI this installer knows how to open for agent '${agent}'"
+  if [[ "$(state_get "$name" WEB)" == "0" ]]; then
+    die "'${name}' was created with --no-web; recreate it without --no-web to publish a web port"
+  fi
+
+  port="$(state_get "$name" WEB_HOST_PORT)"
+  if [[ -z "$port" ]]; then
+    port="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
+    port="${port##*:}"
+  fi
+  [[ -n "$port" ]] || die "'${name}' publishes no web port; recreate it (install.sh recover ${name}) after upgrading the installer"
+
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    printf 'dry-run: %s exec --detach --user %s --env HOME=/home/%s %s /bin/bash -c %q\n' \
+      "$ENGINE_BIN" "$AGENT_USER" "$AGENT_USER" "$name" "$webcmd"
+    printf 'url: http://127.0.0.1:%s/\n' "$port"
+    return 0
+  fi
+
+  if ! eng_container_running "$name"; then
+    eng_start "$name" >/dev/null 2>&1 || true
+    sleep 2
+  fi
+  eng_container_running "$name" || die "container ${name} is not running; start it with: install.sh start ${name}"
+
+  log_dir="/home/${AGENT_USER}/.cache/agent-workspace"
+  log_file="${log_dir}/dsh-web.log"
+
+  if container_web_up "$name" "${WEB_CONTAINER_PORT:-3080}"; then
+    running=1
+    msg "the web UI is already running in ${name}"
+  fi
+
+  if [[ "$running" -eq 0 ]]; then
+    run_engine exec --detach --user "$AGENT_USER" --env "HOME=/home/${AGENT_USER}" "$name" \
+      /bin/bash -c "install -d -m 0700 ${log_dir} && : >${log_file} && exec ${webcmd} >>${log_file} 2>&1"
+  fi
+
+  token=""
+  for ((i = 0; i < 20; i++)); do
+    token="$("$ENGINE_BIN" exec "$name" /bin/bash -c "grep -o 'token=[A-Za-z0-9_-]*' ${log_file} 2>/dev/null | tail -n 1 | cut -d= -f2" 2>/dev/null || true)"
+    [[ -n "$token" ]] && break
+    sleep 1
+  done
+
+  ok "${agent} web UI is published on http://127.0.0.1/${port}/ (container port ${WEB_CONTAINER_PORT:-3080})"
+  if [[ -n "$token" ]]; then
+    msg "open: http://127.0.0.1:${port}/?token=${token}"
+    msg "the first visit signs that browser in for 30 days; afterwards http://127.0.0.1:${port}/ is enough"
+  else
+    warn "no launch token in the log yet; inside the container it is ${log_file}"
   fi
 }
 
@@ -522,7 +645,7 @@ cmd_remove() {
 # --- host doctor -----------------------------------------------------------
 
 cmd_doctor() {
-  local problems=0 names name engine status image volume env_file id archive
+  local problems=0 names name engine status image volume env_file id archive web mapped
   heading "Environment"
   local available
   available="$(detect_engines)"
@@ -586,6 +709,18 @@ cmd_doctor() {
         report_ok "credentials ${env_file} (mode 600)"
       else
         report_bad "credentials ${env_file} have mode ${mode_bits}; expected 600"
+        problems=$((problems + 1))
+      fi
+    fi
+
+    web="$(state_get "$name" WEB)"
+    if [[ "$web" == "1" ]] && command -v "$engine" >/dev/null 2>&1 && eng_container_exists "$name"; then
+      local mapped
+      mapped="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
+      if [[ -n "$mapped" ]]; then
+        report_ok "web UI published on ${mapped}"
+      else
+        report_bad "web UI is enabled but no host port is published; run: install.sh recover ${name}"
         problems=$((problems + 1))
       fi
     fi

@@ -32,6 +32,7 @@ Create a container
 List containers
 Enter a container (run its agent)
 Open a shell in a container
+Open the agent's web UI
 Show the log of a container
 Start / restart a container
 Stop a container
@@ -70,6 +71,38 @@ boots a real init system.
 `ephemeral` runs the agent once and throws the container away when it exits
 (`--rm`); the installer still records it so `list`, `logs` and `doctor` know about it.
 
+## The agent's web UI
+
+DeepSeek Harness ships a web UI. `dsh web` on its own listens on loopback only, and a
+container's loopback is unreachable from the host, so the image carries a small
+overlay that lets the UI listen inside the container; the installer then publishes
+that port on the host's loopback only, as `127.0.0.1:<host port>:3080`.
+
+~~~bash
+./install.sh web dsh-box
+~~~
+
+`web` starts `dsh web` inside the container as the agent user, waits for it to come
+up and prints a one-time link:
+
+~~~
+✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
+  open this once: http://127.0.0.1:34700/?token=...
+  the token sets a 30-day cookie in that browser, so the link is not needed again
+~~~
+
+The host port is picked from the first free one at or above 3080 when the container is
+created, and it is recorded with the container, so `rollback`, `recover` and
+`upgrade` keep the same URL; `fork` gets a new one of its own. Pick a port yourself
+with `./install.sh create --web-port 8080`, or leave the container without a published
+port with `--no-web`. The port is only ever bound to `127.0.0.1` on the host; reach it
+from another machine through your own tunnel if you need that.
+
+The image ships the `dsh` overlay that makes this possible
+(`/usr/share/agent-workspace/dsh-web.yml`), because `dsh web` refuses to bind
+anything but loopback by default. Only agents with a web UI the installer knows how to
+start can be opened this way; anything else is refused with a plain message.
+
 ## Non-interactive use
 
 Every TUI action has a subcommand:
@@ -82,6 +115,7 @@ Every TUI action has a subcommand:
 ./install.sh snapshots dsh-box
 ./install.sh rollback dsh-box --to 20260113T090000Z
 ./install.sh recover dsh-box
+./install.sh web dsh-box                                             # open the agent's web UI
 ./install.sh fork dsh-box dsh-fork --agent opencode
 ./install.sh upgrade dsh-box --image ghcr.io/wraindrock/agent-workspace:latest
 ./install.sh remove dsh-box --purge-snapshots
@@ -139,7 +173,7 @@ Nothing is baked into an image, and nothing lands in the workspace or in a snaps
 | Path | Content |
 | --- | --- |
 | `~/.config/agent-workspace/containers/<name>.env` | the container's credentials, mode 600 |
-| `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, workspace, volume, image, timestamps |
+| `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, workspace, volume, image, web port, timestamps |
 | `~/.local/share/agent-workspace/containers/<name>/meta.history` | one line per lifecycle event |
 | `~/.local/share/agent-workspace/snapshots/<name>/<id>/` | `meta` plus `home.tar.gz` (see [rollback.md](rollback.md)) |
 
@@ -151,5 +185,6 @@ which containers are theirs.
 
 `install.sh doctor` checks the engine, the recorded containers and their volumes, the
 default image, the credential files (they must be mode `600`) and the snapshot
-archives (they must be readable tarballs). `--strict` exits non-zero when anything is
+archives (they must be readable tarballs), and for containers created with a web UI,
+that the host port is still published. `--strict` exits non-zero when anything is
 wrong, which is what the test suite uses.

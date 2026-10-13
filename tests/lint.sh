@@ -178,6 +178,7 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
   docs/architecture.md docs/rollback.md docs/containers.md \
   installer/lib/engine.sh installer/lib/state.sh installer/lib/ui.sh \
   installer/lib/agents.sh installer/lib/commands.sh \
+  system_files/usr/share/agent-workspace/dsh-web.yml \
   tests/install.sh tests/fixtures/fake-engine.sh; do
   if [[ -e "$required" ]]; then
     pass "$required"
@@ -187,14 +188,14 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
 done
 
 echo "installer structure"
-for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor"; do
+for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor" "cmd_web"; do
   if grep -qE "^${symbol}\(\) \{" installer/lib/commands.sh; then
     pass "installer/lib/commands.sh defines ${symbol}"
   else
     fail "installer/lib/commands.sh does not define ${symbol}"
   fi
 done
-for symbol in "run_engine" "engine_run_flags" "detect_engines" "resolve_engine"; do
+for symbol in "run_engine" "engine_run_flags" "detect_engines" "resolve_engine" "eng_host_port"; do
   if grep -qE "^${symbol}\(\) \{" installer/lib/engine.sh; then
     pass "installer/lib/engine.sh defines ${symbol}"
   else

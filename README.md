@@ -186,6 +186,30 @@ reboots; `ephemeral` ones run one command and are removed on exit. The agent men
 read from the image's own manifest, so it always matches the build. Full reference:
 [docs/containers.md](docs/containers.md).
 
+## Opening the agent's web UI
+
+DeepSeek Harness ships a web UI. The container keeps it on its own loopback and the
+installer publishes it on yours:
+
+~~~bash
+./install.sh web dsh-box
+~~~
+
+The command starts `dsh web` inside the container, waits for it to answer, and prints
+a one-time link:
+
+~~~
+✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
+  open this once: http://127.0.0.1:34700/?token=...
+~~~
+
+That first request sets a 30-day cookie in your browser, so the token is only needed
+once. The host port is chosen when the container is created and remembered with it, so
+`rollback`, `recover` and `upgrade` keep the same URL; `fork` assigns a fresh one.
+`./install.sh create --web-port 8080` picks a port yourself and `--no-web` skips the
+published port entirely. The mapping is always `127.0.0.1:<host port>:3080` - nothing
+is reachable from the network. Details: [docs/containers.md](docs/containers.md).
+
 ## Snapshots, rollback and forks
 
 The unit of rollback is the container, not your host system:

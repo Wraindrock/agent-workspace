@@ -23,6 +23,8 @@ export XDG_DATA_HOME="$WORK/data"
 export WORKSPACE_ROOT="$WORK/workspaces"
 export FAKE_ENGINE_STATE="$WORK/fake-state"
 export DEEPSEEK_API_KEY="sk-test-dsh-key"
+# keep auto-assigned web ports out of the well-known range a real host may use
+export WEB_PORT_BASE=34700
 
 BIN="$WORK/bin"
 BIN_DOCKER="$WORK/bin-docker"
@@ -90,6 +92,7 @@ run_installer() { # run_installer PATH [args...]
   RUN_OUT="$(env PATH="$path" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
     XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
     FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" \
     bash "$INSTALLER" "$@" 2>&1 </dev/null)"
   RUN_STATUS=$?
 }
@@ -388,6 +391,90 @@ missing "the snapshots are purged" "$(snap_root box1)"
 run remove ghost --yes
 is "removing an unmanaged container fails" 1 "$RUN_STATUS"
 contains "the unmanaged container is reported" "no container named" "$RUN_OUT"
+
+# =========================================================================
+echo "web ui"
+run create --agent dsh --name webbox --yes
+is "creating a web container exits 0" 0 "$RUN_STATUS"
+is "the web UI is enabled by default" 1 "$(meta_key webbox WEB)"
+WEB_PORT="$(meta_key webbox WEB_HOST_PORT)"
+is "an unused port is assigned automatically" "$WEB_PORT_BASE" "$WEB_PORT"
+contains "create points at the web command" "install.sh web webbox" "$RUN_OUT"
+is "the port is published on the host loopback only" "127.0.0.1:${WEB_PORT}:3080" \
+  "$(cat "$FAKE_ENGINE_STATE/containers/webbox/publish" 2>/dev/null || true)"
+is "the engine resolves the published port" "127.0.0.1:${WEB_PORT}" \
+  "$(FAKE_ENGINE_NAME=podman FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" "$FAKE" port webbox 3080/tcp)"
+
+run web webbox
+is "web exits 0" 0 "$RUN_STATUS"
+contains "web prints the loopback URL" "http://127.0.0.1:${WEB_PORT}/" "$RUN_OUT"
+contains "web prints the one-time token link" "?token=faketok3n" "$RUN_OUT"
+contains "web starts dsh web with the image overlay" \
+  "dsh web --patch /usr/share/agent-workspace/dsh-web.yml --no-open" "$(engine_log)"
+run web webbox
+is "a second web call exits 0" 0 "$RUN_STATUS"
+contains "a second web call reuses the running UI" "already running" "$RUN_OUT"
+run web --dry-run webbox
+is "web --dry-run exits 0" 0 "$RUN_STATUS"
+contains "web --dry-run prints the exec" "dry-run: podman exec --detach" "$RUN_OUT"
+
+run list
+contains "list shows the published web port" "$WEB_PORT" "$RUN_OUT"
+
+run create --agent dsh --name webpin --web-port 34099 --yes
+is "create --web-port exits 0" 0 "$RUN_STATUS"
+is "the requested port is recorded" 34099 "$(meta_key webpin WEB_HOST_PORT)"
+is "the requested port is published" "127.0.0.1:34099:3080" \
+  "$(cat "$FAKE_ENGINE_STATE/containers/webpin/publish" 2>/dev/null || true)"
+
+run create --agent dsh --name webbad --web-port abc --yes
+is "a non-numeric --web-port is rejected" 1 "$RUN_STATUS"
+contains "the bad port is reported" "--web-port expects a port number" "$RUN_OUT"
+
+run create --agent dsh --name webnone --no-web --yes
+is "create --no-web exits 0" 0 "$RUN_STATUS"
+is "the web UI is disabled" 0 "$(meta_key webnone WEB)"
+missing "no port is published" "$FAKE_ENGINE_STATE/containers/webnone/publish"
+run web webnone
+is "web on a --no-web container fails" 1 "$RUN_STATUS"
+contains "the --no-web container is reported" "--no-web" "$RUN_OUT"
+
+run create --agent dsh --name webtmp --mode ephemeral --yes
+is "an ephemeral container is created" 0 "$RUN_STATUS"
+run web webtmp
+is "web on an ephemeral container fails" 1 "$RUN_STATUS"
+contains "the ephemeral container is reported" "ephemeral" "$RUN_OUT"
+
+run create --agent opencode --name weboc --yes
+is "an opencode container is created" 0 "$RUN_STATUS"
+run web weboc
+is "web on an agent without a known UI fails" 1 "$RUN_STATUS"
+contains "the missing web UI is reported" "no web UI" "$RUN_OUT"
+
+run web --dry-run ghost
+is "web on an unmanaged container fails" 1 "$RUN_STATUS"
+contains "the unmanaged container is reported" "no container named" "$RUN_OUT"
+
+# the port is remembered, so a rebuild does not move the published URL
+remove_container webbox
+run recover webbox --yes
+is "recover rebuilds the web container" 0 "$RUN_STATUS"
+is "recover reuses the recorded port" "$WEB_PORT" "$(meta_key webbox WEB_HOST_PORT)"
+is "recover republishes the same port" "127.0.0.1:${WEB_PORT}:3080" \
+  "$(cat "$FAKE_ENGINE_STATE/containers/webbox/publish" 2>/dev/null || true)"
+
+# local-dir and webtmp predate this section; remove them so doctor only judges
+# the containers this section manages
+run remove local-dir webtmp --yes
+run doctor --strict
+is "doctor passes with a published web UI" 0 "$RUN_STATUS"
+contains "doctor reports the published web UI" "web UI published on 127.0.0.1:${WEB_PORT}" "$RUN_OUT"
+rm -f "$FAKE_ENGINE_STATE/containers/webpin/publish"
+run doctor --strict
+is "doctor fails without the published port" 1 "$RUN_STATUS"
+contains "doctor reports the missing web port" "no host port is published" "$RUN_OUT"
+run remove webbox webpin webnone weboc --yes
+is "the web test containers are removed" 0 "$RUN_STATUS"
 
 # =========================================================================
 echo "engine selection"
