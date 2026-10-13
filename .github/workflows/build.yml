@@ -55,6 +55,11 @@ jobs:
             echo "default_tag=${DEFAULT_TAG}"
             echo "base_image=${BASE_IMAGE}"
             echo "agent_user=${AGENT_USER}"
+            # The Justfile reads the same image.env for its labels, so the image CI
+            # publishes carries exactly the labels a local `just build` produces.
+            echo "image_desc=${IMAGE_DESC}"
+            echo "image_license=${IMAGE_LICENSE}"
+            echo "image_logo_url=${IMAGE_LOGO_URL}"
             echo "registry=${registry}"
             echo "registry_host=${registry%%/*}"
             echo "image=${registry}/${IMAGE_NAME}"
@@ -88,6 +93,12 @@ jobs:
       - name: Lint
         run: bash tests/lint.sh
 
+      # The installer tests fake podman/docker, so they need no engine, no root
+      # and no network - and install.sh is the only supported entry point, so it
+      # is the last thing that should go untested on a pull request.
+      - name: Installer integration tests
+        run: bash tests/install.sh
+
       - name: Build image
         env:
           LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
@@ -104,8 +115,11 @@ jobs:
             --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
             --build-arg "AGENT_USER=${{ steps.meta.outputs.agent_user }}" \
             --label "org.opencontainers.image.created=${{ steps.meta.outputs.build_date }}" \
-            --label "org.opencontainers.image.version=${{ steps.meta.outputs.git_sha }}" \
+            --label "org.opencontainers.image.version=${TAG}" \
             --label "org.opencontainers.image.revision=${{ steps.meta.outputs.git_sha }}" \
+            --label "org.opencontainers.image.description=${{ steps.meta.outputs.image_desc }}" \
+            --label "org.opencontainers.image.licenses=${{ steps.meta.outputs.image_license }}" \
+            --label "io.artifacthub.package.logo-url=${{ steps.meta.outputs.image_logo_url }}" \
             --tag "${LOCAL_IMAGE}:${TAG}" \
             --file Containerfile \
             .
@@ -121,7 +135,17 @@ jobs:
         env:
           LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
           TAG: ${{ steps.meta.outputs.default_tag }}
-        run: podman run --rm --entrypoint /usr/bin/bootc "${LOCAL_IMAGE}:${TAG}" container lint
+        run: |
+          set -euo pipefail
+          podman run --rm --entrypoint /usr/bin/bootc "${LOCAL_IMAGE}:${TAG}" container lint \
+            | tee /tmp/bootc-lint.txt
+          # `bootc container lint` reports warnings without failing the command.
+          # Runtime-only content is not advisory for us: /run has to be empty in
+          # the image, otherwise the image ships build junk that nothing cleans up.
+          if grep -q 'nonempty-run-tmp' /tmp/bootc-lint.txt; then
+            echo "::error::bootc container lint found content in /run (nonempty-run-tmp)"
+            exit 1
+          fi
 
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
