@@ -151,6 +151,16 @@ for recipe in "${recipes[@]}"; do
     fail "${name}: agent recipe must declare AGENT_BINARIES=\"<command>\""
     continue
   fi
+  # The installer menu is built from these two, so a missing one would silently
+  # drop the agent's label or its credential prompt.
+  if ! grep -qE '^AGENT_TITLE="[^"]+"$' "$recipe"; then
+    fail "${name}: agent recipe must declare AGENT_TITLE=\"<menu label>\""
+    continue
+  fi
+  if ! grep -qE '^AGENT_ENV="[^"]+"$' "$recipe"; then
+    fail "${name}: agent recipe must declare AGENT_ENV=\"<CREDENTIAL_VAR>\""
+    continue
+  fi
   pass "recipe ${name} (${name} -> $(sed -n 's/^AGENT_BINARIES="\([^"]*\)"$/\1/p' "$recipe"))"
 done
 

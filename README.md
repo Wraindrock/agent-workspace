@@ -47,11 +47,11 @@ podman and every agent gets a whole OS of its own - an `npm install -g`, a
 # one agent, one OS, your code mounted at /workspace
 podman run --rm -it \
   -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest claude
+  ghcr.io/wraindrock/agent-workspace:latest dsh
 
-# the image ships several harnesses; pick any of them
+# the default image ships two harnesses; the other one is opencode
 podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest codex
+  ghcr.io/wraindrock/agent-workspace:latest opencode
 
 # drop the mount and the agent gets a fully disposable filesystem
 podman run --rm -it --entrypoint /bin/bash \
@@ -67,8 +67,8 @@ From a clone of this repository the same command is one recipe:
 
 ~~~bash
 just build                # build the image locally
-just sandbox              # run claude against $PWD, in a throwaway OS
-just sandbox codex        # a different harness
+just sandbox              # run dsh against $PWD, in a throwaway OS
+just sandbox opencode     # the other bundled harness
 just sandbox /bin/bash    # just a shell inside the sandbox
 ~~~
 
@@ -104,7 +104,7 @@ Three files describe everything, and the image proves that it matches them:
 | --- | --- |
 | `image.env` | image identity: name, organisation, description, default tag, base image, agent user |
 | `config/modules.conf` | which build modules run (`20-container-tools=1`, `40-agent-harnesses=0`, ...) |
-| `config/agents.conf` | which agent harnesses are installed (`claude-code=1`, `aider=0`, ...) |
+| `config/agents.conf` | which agent harnesses are installed (`dsh=1`, `opencode=1`, ...) |
 
 At build time the pipeline writes `/usr/share/agent-workspace/manifest.json` **inside
 the image**, containing the modules that ran, the agents that were installed, the
@@ -227,16 +227,18 @@ just build     # build the image with podman
 just verify    # build + container self test
 ~~~
 
-Requirements: `podman` and `just` (and `shellcheck` for the fullest lint). CI runs
-the same `tests/lint.sh` and `tests/smoke.sh` on every pull request, so nothing is
-"only tested on my machine".
+Requirements: `podman` and `just`. The lint uses `shellcheck`, `actionlint` and
+`jq` when they are present and skips them when they are not; CI installs all
+three. It runs the same `tests/lint.sh`, `tests/install.sh` and `tests/smoke.sh`
+on every pull request, so nothing is "only tested on my machine".
 
 ## Repository layout
 
 ~~~text
 Containerfile            the build contract: context stage + image stage
 image.env                image identity and build parameters
-Justfile                 local build, verification and disk-image recipes
+Justfile                 local build, sandbox, verification and disk-image recipes
+install.sh               host installer: named agent containers from the image
 build_files/
   build.sh               the module pipeline
   lib/common.sh          shared build helpers
@@ -246,8 +248,8 @@ system_files/            verbatim overlay copied to / (systemd, sysctl, profile.
 runtime/                 the in-image agent-workspace CLI
 scripts/                 host-side switch / rollback / doctor / cosign helpers
 disk_config/             disk layout and installer customisation
-tests/                   lint.sh, smoke.sh
-docs/                    architecture, modules, agents, rollback
+tests/                   lint.sh, smoke.sh, install.sh
+docs/                    architecture, modules, agents, containers, rollback
 ~~~
 
 Full design notes: [docs/architecture.md](docs/architecture.md).
@@ -263,9 +265,9 @@ shows up in `journalctl` instead of in a broken agent session.
 
 ## Notes and limitations
 
-- The GHCR package is **private after the first push**. Make it public in
-  *Packages -> agent-workspace -> Package settings -> Change visibility* if you
-  want anonymous `podman pull` / `bootc switch`.
+- GHCR creates a new package **private**. This project's package is public, so
+  anonymous `podman pull` and `bootc switch` work; if you publish your own fork,
+  flip *Packages -> agent-workspace -> Package settings -> Change visibility*.
 - The default base is `ghcr.io/ublue-os/base-main:latest` (Fedora + bootc, no
   desktop). Desktop users can switch `BASE_IMAGE` to `ghcr.io/ublue-os/bluefin:stable`
   or `ghcr.io/ublue-os/aurora:stable`; minimalists can use

@@ -4,20 +4,25 @@ Agents are installed by module `40-agent-harnesses`, which is a thin loop over
 per-agent recipes. The selection is declarative:
 
 ~~~bash
-# config/agents.conf
-claude-code=1
-codex=1
-gemini-cli=1
-opencode=0
+# config/agents.conf - the default image
+dsh=1
+opencode=1
+
+# recipes that exist but are not baked in
+claude-code=0
+codex=0
+gemini-cli=0
 aider=0
-```
+~~~
 
 `=1` installs, `=0` skips, and anything unlisted is skipped. A single build can
-override the file with `--build-arg AGENTS=codex,aider`.
+override the file with `--build-arg AGENTS=dsh,opencode,codex`; `AGENTS=all`
+follows the file.
 
 ## A recipe
 
-`build_files/modules/40-agent-harnesses/agents/<name>.sh` defines one function:
+`build_files/modules/40-agent-harnesses/agents/<name>.sh` declares three values
+and one function:
 
 ~~~bash
 #!/usr/bin/env bash
@@ -27,21 +32,31 @@ override the file with `--build-arg AGENTS=codex,aider`.
 
 # The command(s) this recipe installs, recorded in the image manifest.
 AGENT_BINARIES="my-agent"
+# Shown in the host installer's menu.
+AGENT_TITLE="My Agent"
+# The credential the CLI reads; the installer prompts for it.
+AGENT_ENV="MY_AGENT_API_KEY"
 
 install_agent() {
   npm_install_global my-agent-cli
 }
-```
+~~~
 
 The harness sources the recipe and calls `install_agent()`. Everything from
 `build_files/lib/common.sh` is available, so recipes stay two or three lines in
 the common case.
 
 `AGENT_BINARIES` is the command the recipe puts on `PATH`. Recipe names and
-commands do not always match - `claude-code` installs `claude` - so the build
-records the mapping in `manifest.json` (`agentBinaries`) and `agent-workspace
-agents` / `agent-workspace doctor` check the real binary instead of guessing
-from the name. Space-separate several commands if a recipe ships more than one.
+commands do not always match - `claude-code` installs `claude`, `gemini-cli`
+installs `gemini` - so the build records the mapping in `manifest.json`
+(`agentBinaries`) and `agent-workspace agents` / `agent-workspace doctor`
+check the real binary instead of guessing from the name. Space-separate several
+commands if a recipe ships more than one.
+
+The build also publishes `agentCatalog`: one entry per installed agent with its
+binaries, its title and its credential variable. The host installer
+(`install.sh`) reads that to build its menu, so the menu can only offer agents
+the image really contains.
 
 ### Recipes that install from elsewhere
 
@@ -54,7 +69,7 @@ install_agent() {
   retry 3 curl -fsSL https://example.com/install.sh -o /tmp/i.sh
   bash /tmp/i.sh
 }
-```
+~~~
 
 Rules of thumb:
 
@@ -66,22 +81,23 @@ Rules of thumb:
 
 ## Bundled recipes
 
-| Agent | Recipe | Command | Installed via |
-| --- | --- | --- | --- |
-| Claude Code | `claude-code.sh` | `claude` | npm `@anthropic-ai/claude-code` |
-| Codex CLI | `codex.sh` | `codex` | npm `@openai/codex` |
-| Gemini CLI | `gemini-cli.sh` | `gemini` | npm `@google/gemini-cli` |
-| OpenCode | `opencode.sh` | `opencode` | npm `opencode-ai` |
-| Aider | `aider.sh` | `aider` | pipx `aider-chat` |
+| Agent | Recipe | Command | Credential (`AGENT_ENV`) | Installed via | In the default image |
+| --- | --- | --- | --- | --- | --- |
+| DSH (DeepSeek Harness) | `dsh.sh` | `dsh` | `DEEPSEEK_API_KEY` | npm `@deepseek-ai/dsh` | yes |
+| OpenCode | `opencode.sh` | `opencode` | `DEEPSEEK_API_KEY` | npm `opencode-ai` | yes |
+| Claude Code | `claude-code.sh` | `claude` | `ANTHROPIC_API_KEY` | npm `@anthropic-ai/claude-code` | no |
+| Codex CLI | `codex.sh` | `codex` | `OPENAI_API_KEY` | npm `@openai/codex` | no |
+| Gemini CLI | `gemini-cli.sh` | `gemini` | `GEMINI_API_KEY` | npm `@google/gemini-cli` | no |
+| Aider | `aider.sh` | `aider` | `OPENAI_API_KEY` | pipx `aider-chat` | no |
 
 `agent-workspace agents` lists what the running image actually has, cross-checked
 against the manifest:
 
 ~~~text
-  ok claude-code -> /usr/bin/claude
-  ok codex -> /usr/bin/codex
-  warn gemini-cli is declared in the manifest but its binary is missing
-```
+  ok dsh -> /usr/bin/dsh
+  ok opencode -> /usr/bin/opencode
+  warn codex is declared in the manifest but its binary is missing
+~~~
 
 ## Credentials
 
@@ -93,7 +109,8 @@ each operator supplies their own keys. The idiomatic places are:
 | `/etc/agent-workspace/config.env` | machine-level defaults, three-way merged by bootc |
 | systemd credentials | `LoadCredential=` in a unit |
 | podman secrets | `podman run --secret` for containerised agents |
-| the agent's own login flow | `claude`, `codex login`, `gh auth login` |
+| per-container env file | `install.sh` writes `~/.config/agent-workspace/containers/<name>.env` (mode 600) and passes it with `--env-file` |
+| the agent's own login flow | `dsh`, `claude`, `codex login`, `gh auth login` |
 
 Because the image is public and reproducible, treat every value in
 `config/agents.conf` as "installable by anyone" and every secret as
@@ -101,7 +118,11 @@ Because the image is public and reproducible, treat every value in
 
 ## Adding an agent
 
-1. Add `agents/<name>.sh` with `AGENT_BINARIES` and `install_agent()`.
+1. Add `agents/<name>.sh` with `AGENT_BINARIES`, `AGENT_TITLE`,
+   `AGENT_ENV` and `install_agent()`.
 2. Add `<name>=1` to `config/agents.conf`.
-3. `just check` validates that every name in `config/agents.conf` has a recipe.
-4. Rebuild with `just verify` - the smoke test checks the binary exists.
+3. `just check` validates that every name in `config/agents.conf` has a
+   recipe, and that the recipe defines `install_agent()` and declares
+   `AGENT_BINARIES`, `AGENT_TITLE` and `AGENT_ENV`.
+4. Rebuild with `just verify` - the smoke test walks `agentCatalog` and checks
+   every declared binary exists in the image.

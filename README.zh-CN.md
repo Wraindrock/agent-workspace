@@ -43,11 +43,11 @@ systemd、用户、软件包数据库和 SELinux 策略。用 podman 跑起来�
 # 一个 agent 独占一套系统，代码挂载到 /workspace
 podman run --rm -it \
   -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest claude
+  ghcr.io/wraindrock/agent-workspace:latest dsh
 
-# 镜像内置多个 harness，换一个名字即可
+# 默认镜像内置两个 harness：dsh 与 opencode
 podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest codex
+  ghcr.io/wraindrock/agent-workspace:latest opencode
 
 # 不挂载目录，agent 就在一次性的文件系统里工作
 podman run --rm -it --entrypoint /bin/bash \
@@ -62,8 +62,8 @@ podman run --rm -it --entrypoint /bin/bash \
 
 ~~~bash
 just build                # 在本地构建镜像
-just sandbox              # 用 claude 跑当前目录，系统用完即弃
-just sandbox codex        # 换一个 harness
+just sandbox              # 用 dsh 跑当前目录，系统用完即弃
+just sandbox opencode     # 换另一个内置 harness
 just sandbox /bin/bash    # 只进沙箱里要一个 shell
 ~~~
 
@@ -97,7 +97,7 @@ just run-vm        # 在 qemu 里启动 qcow2
 | --- | --- |
 | `image.env` | 镜像身份：名称、组织、描述、默认 tag、基础镜像、agent 用户名 |
 | `config/modules.conf` | 哪些构建模块参与（`20-container-tools=1`、`40-agent-harnesses=0` ……） |
-| `config/agents.conf` | 安装哪些 agent（`claude-code=1`、`aider=0` ……） |
+| `config/agents.conf` | 安装哪些 agent（`dsh=1`、`opencode=1` ……） |
 
 构建时，pipeline 会在**镜像内**写入 `/usr/share/agent-workspace/manifest.json`，
 记录执行过的模块、安装的 agent、工具链版本以及精确的基础镜像。在已部署的主机上：
@@ -121,7 +121,7 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 | `20-container-tools` | podman、buildah、skopeo、crun、netavark、passt、`podman.socket`、sub-id 区间 |
 | `30-agent-toolchains` | gcc/make、gh、just、Node.js + pnpm/tsx/typescript、Python + pipx、uv |
 | `40-agent-harnesses` | 依据 `config/agents.conf` 选择安装的 agent CLI |
-| `50-devtools` | neovim、ripgrep、tmux、shellcheck、direnv 等日常工具 |
+| `50-devtools` | neovim、ripgrep、tmux、tree、zsh、fd、git-delta、htop、shellcheck、direnv |
 | `60-system-config` | systemd 单元、sysctl 调优、registries 配置、`/etc/skel` |
 | `80-manifest` | 写出镜像 manifest 与模块清单 |
 | `90-cleanup` | 清理缓存与日志，保持镜像精简 |
@@ -184,23 +184,25 @@ keyless 签名；如果你更信任固定公钥，运行 `just cosign-keygen` �
 ~~~text
 Containerfile            构建契约：context 阶段 + 镜像阶段
 image.env                镜像身份与构建参数
+Justfile                 本地构建、沙箱、校验与磁盘镜像 recipe
+install.sh               宿主机安装器：按名字创建 agent 容器
 build_files/             模块化的构建脚本（build.sh + lib/ + modules/）
 config/                  声明式开关：modules.conf、agents.conf
 system_files/            原样覆盖到 / 的文件（systemd、sysctl、profile.d）
 runtime/                 镜像内的 agent-workspace CLI
 scripts/                 宿主机侧的 switch / rollback / doctor / cosign 脚本
 disk_config/             磁盘布局与安装器定制
-tests/                   lint.sh、smoke.sh
-docs/                    架构、模块、agent、回滚文档
+tests/                   lint.sh、smoke.sh、install.sh
+docs/                    架构、模块、agent、容器、回滚文档
 ~~~
 
 完整设计说明见 [docs/architecture.md](docs/architecture.md)。
 
 ## 注意事项
 
-- GHCR 上的 package 在首次推送后**默认是 private**。若希望匿名 `podman pull` 或
-  `bootc switch`，请在 *Packages -> agent-workspace -> Package settings ->
-  Change visibility* 中改为 public。
+- GHCR 新建 package 时**默认是 private**。本项目的 package 已经设为 public，匿名
+  `podman pull` 与 `bootc switch` 都能用；如果你发布自己的 fork，请到 *Packages ->
+  agent-workspace -> Package settings -> Change visibility* 改为 public。
 - 默认基础镜像是 `ghcr.io/ublue-os/base-main:latest`（Fedora + bootc，无桌面）。
   桌面用户可把 `BASE_IMAGE` 换成 `ghcr.io/ublue-os/bluefin:stable` 或
   `ghcr.io/ublue-os/aurora:stable`；极简用户可用 `quay.io/fedora/fedora-bootc:44`。

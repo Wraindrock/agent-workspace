@@ -76,7 +76,7 @@ another.
 
 | Path | Contents |
 | --- | --- |
-| `/usr/share/agent-workspace/manifest.json` | JSON: image, version, base image, Fedora release, modules with descriptions, agents, toolchain versions, build timestamp |
+| `/usr/share/agent-workspace/manifest.json` | JSON: image, version, base image, Fedora release, modules with descriptions, the installed agents with their binaries, titles and credential variables (`agentBinaries`, `agentCatalog`), toolchain versions, build timestamp |
 | `/usr/share/agent-workspace/modules.txt` | newline-separated module names, for tools that do not want JSON |
 
 `/etc/agent-workspace/build.env` carries the same identity as shell variables, so
@@ -84,7 +84,7 @@ the CLI can read it without `jq`. Because the manifest is *inside* the image, a
 deployed machine can always explain itself:
 
 ~~~bash
-agent-workspace manifest | jq '.modules, .agents'
+agent-workspace manifest | jq '.modules, .agents, .agentCatalog'
 ~~~
 
 and `agent-workspace doctor --strict` can fail when the running system no longer
@@ -108,6 +108,7 @@ image; anything that changes per machine must land in `/etc` or `/var`.
 | Component | Path | Role |
 | --- | --- | --- |
 | `agent-workspace` | `/usr/bin/agent-workspace` | dispatcher for all subcommands |
+| `common.sh` | `/usr/lib/agent-workspace/` | shared helpers sourced by the dispatcher and its subcommands |
 | `cmd-info.sh` | `/usr/lib/agent-workspace/` | `version`, `manifest`, `modules`, `agents` |
 | `cmd-status.sh` | `/usr/lib/agent-workspace/` | bootc deployment status, container detection |
 | `cmd-doctor.sh` | `/usr/lib/agent-workspace/` | declaration-vs-reality checks |
@@ -153,6 +154,30 @@ containers, in `podman run` sessions, and on a booted host.
 
 Universal Blue images are themselves cosign-signed Fedora bootc images, which is
 why the module pipeline can assume `dnf5` and `bootc` exist.
+
+## The host installer
+
+`install.sh` at the repository root is the other half of the contract. It runs on
+the *host* - it never enters the image - and turns one published image into several
+independent agent containers:
+
+~~~bash
+./install.sh                  # interactive wizard
+./install.sh --file boxes.conf --yes
+./install.sh --list
+~~~
+
+| Decision | Made by |
+| --- | --- |
+| which image | `--image` (default taken from `image.env`) |
+| how many containers, and their names | the wizard, `--count`, `--name`, or a declaration file |
+| which agent each container runs | the agent catalog in the image manifest, falling back to the built-in `dsh` and `opencode` table |
+| persistent or ephemeral | `--mode persistent|ephemeral` |
+| credentials | a `0600` env file per container under `~/.config/agent-workspace/containers/` |
+
+Every container it creates carries the labels `agent-workspace.manager=install.sh`,
+`agent-workspace.agent` and `agent-workspace.mode`, so `--list`, `--verify` and
+`--remove` only ever touch containers this installer owns. See `docs/containers.md`.
 
 ## Deliberate non-goals
 

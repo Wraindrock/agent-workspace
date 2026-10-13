@@ -35,7 +35,9 @@ bash tests/smoke.sh localhost/agent-workspace:dev
 
 `tests/lint.sh` is the same check CI runs on every pull request, and it degrades
 gracefully: `shellcheck`, `actionlint`, `just`, `jq` and `pyyaml` are used when
-present, skipped when not. `tests/install.sh` drives `install.sh` against a fake
+present, skipped when not. Documentation counts as part of a change: the lint
+fails when a required doc file is missing, so keep the module and agent tables in
+`README.md` and `docs/` matching the code. `tests/install.sh` drives `install.sh` against a fake
 `podman`, so the host installer is covered in CI without a container engine or
 root. The build workflow installs the pinned `actionlint`
 and `just`, so a workflow edit that uses an unavailable context - or a Justfile
@@ -51,11 +53,15 @@ that no longer parses - fails in CI before any build.
 
 ## Adding an agent
 
-1. `build_files/modules/40-agent-harnesses/agents/<name>.sh` with
-   `AGENT_BINARIES` (the command it installs) and `install_agent()`.
+1. `build_files/modules/40-agent-harnesses/agents/<name>.sh` declaring
+   `AGENT_BINARIES` (the commands it installs), `AGENT_TITLE` (the label shown in
+   the installer menu), `AGENT_ENV` (the credential variable it needs) and
+   `install_agent()`.
 2. Add `<name>=1` (or `=0`) to `config/agents.conf`.
-3. `just check` verifies the reference resolves and the recipe declares both;
-   the smoke test verifies the declared binary exists in the built image.
+3. `just check` verifies the reference resolves and that the recipe declares all
+   three fields; the smoke test verifies every binary listed in the image's
+   `agentCatalog` - and therefore every entry the installer offers - exists in
+   the built image.
 
 ## Changing the image identity
 

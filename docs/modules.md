@@ -14,9 +14,13 @@ build_files/modules/<NN-name>/
 
 ~~~bash
 MODULE_NAME=20-container-tools
-MODULE_DESCRIPTION=Rootless podman, buildah, skopeo and the container storage stack
+MODULE_DESCRIPTION="Rootless podman, buildah, skopeo and the container storage stack"
 MODULE_ENABLED_DEFAULT=1
-```
+~~~
+
+Quote every value. The pipeline `source`s this file, so an unquoted description
+with spaces is parsed as a command and the build dies with
+`base: command not found`.
 
 | Key | Rule |
 | --- | --- |
@@ -47,12 +51,14 @@ From `build_files/lib/common.sh`:
 | `log` / `ok` / `warn` / `die` | prefixed output; `die` exits the build |
 | `section <title>` | visual separator in build logs |
 | `require_root`, `require_command <cmd>` | fail fast on a wrong environment |
-| `install_rpms <pkgs...>` | `dnf5 install` - fails the build if a package is missing |
+| `install_rpms <pkgs...>` | `dnf5 install` for a required set: already-installed packages are filtered out, a failed transaction is retried with `--skip-unavailable`, and every package is verified afterwards |
 | `install_optional_rpms <pkgs...>` | warns and continues when a package does not exist for this release |
+| `rpm_installed <pkg>` | true when the package - or anything providing it - is already in the image |
 | `retry <attempts> <cmd...>` | retries flaky network commands |
-| `npm_install_global <pkgs...>` | global npm install with retries |
+| `npm_install_global <pkgs...>` | global npm install with retries, cached under `/var/cache/agent-workspace/npm` |
 | `pipx_install <pkgs...>` | pipx install into `/opt/pipx` with binaries in `/usr/local/bin` |
-| `record_value <key> <value>` | appends to `${STATE_DIR}/<key>` for the manifest |
+| `enable_unit <unit>` | enables a unit during an image build, falling back to `systemctl --root=/ enable` |
+| `record_value <key> <value>` | appends one value to the build state that `80-manifest` reads |
 | `state_read <key>` | reads it back |
 
 ## Ordering and state
@@ -76,8 +82,8 @@ that state, which keeps modules from having to know about each other.
    repository-wide decision.
 4. Run `just check` - it validates the directory, the `module.env` contract, and
    that `config/modules.conf` only references real modules.
-5. Document it in `docs/modules.md`'s table in the README and rebuild with
-   `just verify`.
+5. Add it to the module tables in `README.md` and `docs/modules.md`, then
+   rebuild with `just verify`.
 
 ## Turning modules off
 
@@ -96,12 +102,12 @@ itself truthfully.
 
 | Module | Packages / actions | Notable side effects |
 | --- | --- | --- |
-| `00-preflight` | none | writes `/etc/agent-workspace/build.env`, creates `/var/lib/agent-workspace` |
-| `10-base-packages` | git, git-lfs, curl, jq, rsync, openssh-clients, tar, unzip | - |
-| `20-container-tools` | podman, buildah, skopeo, crun, netavark, passt, fuse-overlayfs, uidmap, podman-docker | enables `podman.socket`, writes root's sub-id range |
-| `30-agent-toolchains` | gcc, make, gh, just, nodejs, npm, python3, pipx, openssl-devel | `pnpm`, `tsx`, `typescript` globally; `uv` in `/usr/local/bin` |
-| `40-agent-harnesses` | the agents selected in `config/agents.conf` | installs each recipe's CLI |
-| `50-devtools` | neovim, ripgrep, tmux, tree, zsh, shellcheck, direnv, fd-find, git-delta, htop | optional bat/btop/eza/starship |
-| `60-system-config` | - | enables firstboot + health units, seeds `/etc/skel`, creates `/var/lib/agent-workspace/{cache,sessions}` |
-| `80-manifest` | - | writes `manifest.json` and `modules.txt` |
-| `90-cleanup` | - | `dnf5 clean all`, clears `/var/log` and `/tmp`, removes `${STATE_DIR}` |
+| `00-preflight` | none | writes `/etc/agent-workspace/build.env` (base image, version, Fedora release), creates `/usr/share/agent-workspace`, `/usr/lib/agent-workspace`, `/etc/agent-workspace` and `/var/lib/agent-workspace`, and materialises the `/usr/local` and `/root` symlink targets |
+| `10-base-packages` | bash-completion, bind-utils, ca-certificates, curl, dnf5-plugins, findutils, git, git-lfs, gnupg2, hostname, iproute, iputils, jq, less, openssh-clients, procps-ng, psmisc, rsync, sudo, tar, unzip, which, wget, xz, zip, zstd (optional `yq`) | installs the git-lfs system hooks |
+| `20-container-tools` | podman, buildah, skopeo, crun, fuse-overlayfs, netavark, aardvark-dns, catatonit, passt, podman-docker (optional containernetworking-plugins, slirp4netns) | enables `podman.socket`, writes root's sub-id range, creates `/etc/containers/registries.conf.d`, warns when `newuidmap` is missing |
+| `30-agent-toolchains` | gcc, gcc-c++, gh, just, make, nodejs, npm, openssl-devel, python3, python3-devel, python3-pip, python3-wheel, pipx, zlib-devel | `pnpm`, `tsx`, `typescript` globally; `uv` in `/usr/local/bin`, installed from the upstream script when the package is unavailable; records the node and python versions |
+| `40-agent-harnesses` | the agents selected in `config/agents.conf` | installs each recipe's CLI and records its binaries, title and credential variable |
+| `50-devtools` | neovim, ripgrep, tmux, tree, zsh, ShellCheck, direnv, fd-find, git-delta, htop, make (optional bat, btop, eza, starship) | symlinks `fd` and `bat` to their conventional names |
+| `60-system-config` | - | enables the firstboot and health units, applies presets, seeds `/etc/skel`, creates `/var/lib/agent-workspace/{cache,sessions}` |
+| `80-manifest` | - | writes `manifest.json` (including `agentBinaries` and `agentCatalog`) and `modules.txt` |
+| `90-cleanup` | - | `dnf5 clean all`, clears `/var/log`, `/tmp`, `/var/tmp` and `/var/cache/*`; the build state is removed by `build_files/build.sh` after the summary |

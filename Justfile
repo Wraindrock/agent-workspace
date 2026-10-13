@@ -73,11 +73,11 @@ verify $target_image=image_name $tag=default_tag: (build target_image tag) && (s
 # Sandbox - run a whole OS in a container to isolate an agent run
 # ---------------------------------------------------------------------------
 # Run the image as a disposable agent sandbox, $PWD mounted at /workspace.
-#   just sandbox                 -> claude
-#   just sandbox codex           -> another harness
+#   just sandbox                 -> dsh
+#   just sandbox opencode        -> the other bundled harness
 #   just sandbox /bin/bash       -> just a shell inside the sandbox
 [group('Sandbox')]
-sandbox agent="claude" dir="." $target_image=image_name $tag=default_tag:
+sandbox agent="dsh" dir="." $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
     set -euo pipefail
 

@@ -10,6 +10,46 @@ for the *declarative surface* - `config/*.conf`, `image.env`, and the
 
 ## [Unreleased]
 
+### Added
+
+- `install.sh`, a host-side installer that turns the image into named agent
+  containers: an interactive wizard or a declaration file, `persistent` (systemd
+  plus a named `/home/agent` volume) and `ephemeral` (one-shot) lifecycles, one
+  credential file per container at
+  `~/.config/agent-workspace/containers/<name>.env` (mode 600, passed with
+  `--env-file`), and `--list` / `--verify` / `--remove` for what it created.
+  `just install` wraps it.
+- `agentCatalog` in the image manifest: for every installed agent its binaries,
+  title and credential variable, so the installer menu and
+  `agent-workspace agents` describe exactly what a build ships.
+- Agent recipe `dsh` (npm `@deepseek-ai/dsh`); `dsh` and `opencode` are now
+  the default selection in `config/agents.conf`.
+- `tests/install.sh` (37 checks against a fake `podman`), and `tests/lint.sh`
+  now runs it, checks that the Justfile parses (`just --list`) and lints the
+  workflows with `actionlint`.
+- `docs/containers.md`.
+
+### Changed
+
+- `AGENT_BINARIES`, `AGENT_TITLE` and `AGENT_ENV` are the recipe contract;
+  `agent-workspace agents` and `doctor` check the declared binaries instead of
+  deriving a command name from the recipe name.
+- `install_rpms` filters out packages that are already installed, retries a
+  failed transaction with `--skip-unavailable`, and warns per missing package
+  instead of failing the whole build on Fedora package churn.
+- CI installs `actionlint` and `just`, authenticates podman and cosign through
+  an explicit authfile, and signs the digest the registry actually stored (read
+  back with a HEAD request) rather than a locally computed one.
+
+### Fixed
+
+- `module.env` descriptions are quoted, so sourcing the file cannot execute
+  them.
+- `00-preflight` materialises the `/usr/local` and `/root` symlink targets,
+  fixing `ENOTDIR` failures in npm and pipx installers.
+- `90-cleanup` no longer removes the build state that the build summary still
+  reads.
+
 ## [0.1.0] - 2026-10-13
 
 The first structure release: a complete, buildable, publishable skeleton.
