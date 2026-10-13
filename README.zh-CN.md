@@ -186,6 +186,21 @@ scratch      opencode  ephemeral
 keyless 签名；如果你更信任固定公钥，运行 `just cosign-keygen` 并把私钥存为
 仓库 secret `SIGNING_SECRET`，工作流会自动切换到密钥签名。
 
+## 自己构建镜像
+
+~~~bash
+git clone https://github.com/wraindrock/agent-workspace
+cd agent-workspace
+just check     # 仓库自检，不需要 podman
+just build     # 用 podman 构建镜像
+just verify    # 构建 + 容器自检
+~~~
+
+依赖：`podman`（或 `docker`）与 `just`，运行 `install.sh` 另需 bash 4.4+。
+仓库自检在装了 `shellcheck`、`actionlint`、`jq` 时使用它们，没装就跳过，CI 会全部
+装上。每个 PR 都会跑同一套 `tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`，
+所以没有「只在我机器上测过」这种事。
+
 ## 目录结构
 
 ~~~text
@@ -226,6 +241,12 @@ docs/                    架构、模块、agent、容器、回滚文档
 可用，并开启 lingering。另有每日 `agent-workspace-health.timer` 运行
 `agent-workspace doctor --quiet`，让漂移出现在 `journalctl` 里，而不是某个 agent
 会话的报错里。
+
+## 参与贡献
+
+欢迎提 issue 与 PR，见 [CONTRIBUTING.md](CONTRIBUTING.md) 与
+[SECURITY.md](SECURITY.md)。本项目遵循
+[Contributor Covenant](CODE_OF_CONDUCT.md)。
 
 ## 许可证
 
