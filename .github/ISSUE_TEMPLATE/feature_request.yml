@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a module, an agent, or a lifecycle change
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        agent-workspace is assembled from ordered modules. The cheapest way to
+        get a feature merged is to describe it as a module with a clear
+        on/off switch.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+    validations:
+      required: true
+  - type: dropdown
+    id: shape
+    attributes:
+      label: What shape does the change take?
+      options:
+        - New build module
+        - New agent harness recipe
+        - Change to an existing module
+        - Lifecycle / rollback behaviour
+        - CI, docs or tooling
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed declaration
+      description: Roughly what would `module.env` / `config/*.conf` look like?
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: cost
+    attributes:
+      label: Estimated image size impact
+      placeholder: "+120 MiB, node toolchain already present in module 30"
+    validations:
+      required: false
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This can be turned off with a config flag
+        - label: This does not require network access at first boot
+        - label: I have read docs/modules.md
+          required: true

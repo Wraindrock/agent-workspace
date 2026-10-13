@@ -1,0 +1,22 @@
+# Signing material - never commit
+cosign.key
+cosign.password
+*.pem
+
+# Build artifacts
+_build*
+output/
+output.env
+*_chunkah_*
+*_rpm-ostree_*
+*.qcow2
+*.raw
+*.iso
+*.manifest.json
+
+# Local overrides
+.env
+.env.local
+.vscode/
+.idea/
+*.swp

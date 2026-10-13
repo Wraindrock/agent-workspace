@@ -1,0 +1,13 @@
+[Unit]
+Description=agent-workspace health check
+Documentation=https://github.com/wraindrock/agent-workspace
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/agent-workspace doctor --quiet
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

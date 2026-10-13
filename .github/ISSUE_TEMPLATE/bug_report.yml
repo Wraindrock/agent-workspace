@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in the image, the CLI or the build pipeline is broken
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please include the exact commands and their
+        output - this project is reproducible, so "it fails" is usually
+        traceable to a specific module or tag.
+  - type: input
+    id: image
+    attributes:
+      label: Image and tag
+      description: Output of `agent-workspace version`
+      placeholder: ghcr.io/wraindrock/agent-workspace:latest (20261013)
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it fail?
+      options:
+        - Deployed system (booted agent-workspace host)
+        - Running as a plain container
+        - Image build (CI or `just build`)
+        - Disk image build (qcow2 / ISO)
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: Include the command and the full error output.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`agent-workspace doctor` output"
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback state
+      description: Did `agent-workspace rollback` recover the machine? This tells us whether the failure is in a deployment or in the image.
+      render: shell
+    validations:
+      required: false

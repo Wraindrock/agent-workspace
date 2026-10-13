@@ -1,0 +1,190 @@
+# ---------------------------------------------------------------------------
+# Build, self-test and publish the agent-workspace image.
+#
+#   pull request -> lint + build + container self test (never pushes)
+#   push to main -> the above, then push and cosign-sign the image
+#   nightly      -> rebuild against the freshest base image
+#
+# The same steps are available locally as `just check`, `just build` and
+# `just smoke`; this workflow deliberately uses plain podman so that CI has
+# one less moving part than a developer machine.
+# ---------------------------------------------------------------------------
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # rebuild every night so the image tracks security fixes in the base image
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build:
+    name: build and publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Read image metadata from image.env
+        id: meta
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . ./image.env
+          registry="$(printf '%s' "${IMAGE_REGISTRY:-${{ env.IMAGE_REGISTRY }}}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "image_name=${IMAGE_NAME}"
+            echo "default_tag=${DEFAULT_TAG}"
+            echo "base_image=${BASE_IMAGE}"
+            echo "agent_user=${AGENT_USER}"
+            echo "registry=${registry}"
+            echo "registry_host=${registry%%/*}"
+            echo "image=${registry}/${IMAGE_NAME}"
+            echo "local_image=localhost/${IMAGE_NAME}"
+            echo "date_tag=$(date -u +%Y%m%d)"
+            echo "git_sha=$(git rev-parse --short HEAD)"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Lint
+        run: bash tests/lint.sh
+
+      - name: Build image
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: |
+          set -euo pipefail
+          podman build \
+            --pull=newer \
+            --build-arg "BASE_IMAGE=${{ steps.meta.outputs.base_image }}" \
+            --build-arg "IMAGE_NAME=${{ steps.meta.outputs.image_name }}" \
+            --build-arg "IMAGE_REGISTRY=${{ steps.meta.outputs.registry }}" \
+            --build-arg "IMAGE_VERSION=${TAG}" \
+            --build-arg "GIT_SHA=${{ steps.meta.outputs.git_sha }}" \
+            --build-arg "BUILD_DATE=${{ steps.meta.outputs.build_date }}" \
+            --build-arg "AGENT_USER=${{ steps.meta.outputs.agent_user }}" \
+            --label "org.opencontainers.image.created=${{ steps.meta.outputs.build_date }}" \
+            --label "org.opencontainers.image.version=${{ steps.meta.outputs.git_sha }}" \
+            --label "org.opencontainers.image.revision=${{ steps.meta.outputs.git_sha }}" \
+            --tag "${LOCAL_IMAGE}:${TAG}" \
+            --file Containerfile \
+            .
+          podman images --filter "reference=${LOCAL_IMAGE}"
+
+      - name: Container self test
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: bash tests/smoke.sh "${LOCAL_IMAGE}:${TAG}"
+
+      - name: Fail on bootc lint regressions
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: podman run --rm --entrypoint /usr/bin/bootc "${LOCAL_IMAGE}:${TAG}" container lint
+
+      # ------------------------------------------------------------------
+      # Everything below only runs for a merged or scheduled build.
+      # ------------------------------------------------------------------
+      - name: Log in to the container registry
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
+            podman login "${{ steps.meta.outputs.registry_host }}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Preserve the currently published image as :previous
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: |
+          set -euo pipefail
+          if podman pull "${IMAGE}:${TAG}"; then
+            podman tag "${IMAGE}:${TAG}" "${IMAGE}:previous"
+            podman push "${IMAGE}:previous"
+            echo "tagged the outgoing release as :previous"
+          else
+            echo "no published image yet, nothing to preserve"
+          fi
+
+      - name: Tag this build
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+          DATE_TAG: ${{ steps.meta.outputs.date_tag }}
+          GIT_SHA: ${{ steps.meta.outputs.git_sha }}
+        run: |
+          set -euo pipefail
+          image_id="$(podman image inspect "${LOCAL_IMAGE}:${TAG}" --format '{{.Id}}')"
+          tags=(
+            "${TAG}"
+            "${DATE_TAG}"
+            "${TAG}-${DATE_TAG}"
+            "${DATE_TAG}-${GIT_SHA}"
+          )
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            tags+=("${TAG}-${GIT_SHA}")
+          fi
+          for tag in "${tags[@]}"; do
+            podman tag "$image_id" "${IMAGE}:${tag}"
+          done
+          printf '%s\n' "${tags[@]}" > "$RUNNER_TEMP/tags.txt"
+          cat "$RUNNER_TEMP/tags.txt"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          set -euo pipefail
+          while read -r tag; do
+            [[ -n "$tag" ]] || continue
+            podman push "${IMAGE}:${tag}"
+          done < "$RUNNER_TEMP/tags.txt"
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the published image
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+        run: |
+          set -euo pipefail
+          digest="$(podman image inspect "${IMAGE}:${TAG}" --format '{{index .RepoDigests 0}}')"
+          echo "signing ${digest}"
+          if [[ -n "${SIGNING_SECRET}" ]]; then
+            printf '%s' "${SIGNING_SECRET}" > "$RUNNER_TEMP/cosign.key"
+            cosign sign --yes --key "$RUNNER_TEMP/cosign.key" "${digest}"
+            rm -f "$RUNNER_TEMP/cosign.key"
+          else
+            # keyless: the workflow's OIDC identity is the verification anchor
+            cosign sign --yes "${digest}"
+          fi

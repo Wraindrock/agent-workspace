@@ -1,0 +1,4 @@
+# agent-workspace defaults; preset-all re-applies these on image updates.
+enable podman.socket
+enable agent-workspace-firstboot.service
+enable agent-workspace-health.timer

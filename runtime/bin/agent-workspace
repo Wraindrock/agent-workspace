@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# agent-workspace - control CLI shipped inside the image.
+#
+#   agent-workspace version              image identity and manifest summary
+#   agent-workspace manifest [--json]    full declarative build manifest
+#   agent-workspace modules              modules baked into this image
+#   agent-workspace agents               agent harnesses baked into this image
+#   agent-workspace status               bootc deployment status
+#   agent-workspace doctor [flags]       verify the running system
+#   agent-workspace switch <tag>         move to another published tag
+#   agent-workspace rollback             return to the previous deployment
+#   agent-workspace update               apply an available update
+#   agent-workspace pin [--clear]        pin / unpin the booted image digest
+# ---------------------------------------------------------------------------
+set -euo pipefail
+
+AGENT_WORKSPACE_LIB="${AGENT_WORKSPACE_LIB:-/usr/lib/agent-workspace}"
+
+# shellcheck source=/dev/null
+source "${AGENT_WORKSPACE_LIB}/common.sh"
+
+usage() {
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+dispatch() {
+  local command="${1:-help}"
+  [[ $# -gt 0 ]] && shift
+
+  case "$command" in
+    version|manifest|modules|agents)
+      # shellcheck source=/dev/null
+      source "${AGENT_WORKSPACE_LIB}/cmd-info.sh"
+      "cmd_${command}" "$@"
+      ;;
+    status)
+      # shellcheck source=/dev/null
+      source "${AGENT_WORKSPACE_LIB}/cmd-status.sh"
+      cmd_status "$@"
+      ;;
+    doctor)
+      # shellcheck source=/dev/null
+      source "${AGENT_WORKSPACE_LIB}/cmd-doctor.sh"
+      cmd_doctor "$@"
+      ;;
+    switch|rollback|update|pin)
+      # shellcheck source=/dev/null
+      source "${AGENT_WORKSPACE_LIB}/cmd-lifecycle.sh"
+      "cmd_${command}" "$@"
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      warn "unknown command: ${command}"
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+dispatch "$@"

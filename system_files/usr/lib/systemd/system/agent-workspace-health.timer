@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the agent-workspace health check daily
+Documentation=https://github.com/wraindrock/agent-workspace
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1d
+RandomizedDelaySec=1h
+Persistent=true
+Unit=agent-workspace-health.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Universal Blue (bootc ecosystem)
+    url: https://universal-blue.org/
+    about: Questions about the bootc base images this project builds on.
+  - name: bootc documentation
+    url: https://containers.github.io/bootc/
+    about: How transactional system containers, switch and rollback work.

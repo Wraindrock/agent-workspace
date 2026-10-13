@@ -1,0 +1,34 @@
+{
+  // Keep the bootc base image (and anything else referenced as an OCI digest)
+  // moving forward without surprise major bumps.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", ":semanticCommits", ":dependencyDashboard"],
+  labels: ["dependencies"],
+  pinDigests: false,
+  packageRules: [
+    {
+      // The base image is the platform: review those updates deliberately.
+      matchManagers: ["regex"],
+      matchFileNames: ["image.env"],
+      groupName: "base image",
+      semanticCommitType: "fix",
+      schedule: ["before 6am on the first day of the month"],
+    },
+  ],
+  regexManagers: [
+    {
+      fileMatch: ["^image\\.env$"],
+      matchStrings: [
+        "BASE_IMAGE=(?<depName>[^:\\s]+):(?<currentValue>[^\\s]+)",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      fileMatch: ["^image\\.env$"],
+      matchStrings: [
+        "BIB_IMAGE=(?<depName>[^:\\s]+):(?<currentValue>[^\\s]+)",
+      ],
+      datasourceTemplate: "docker",
+    },
+  ],
+}

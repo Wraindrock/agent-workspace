@@ -1,0 +1,17 @@
+[Unit]
+Description=agent-workspace first boot provisioning
+Documentation=https://github.com/wraindrock/agent-workspace
+ConditionPathExists=!/var/lib/agent-workspace/.provisioned
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/agent-workspace/firstboot.sh
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

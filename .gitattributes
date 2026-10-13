@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sh text eol=lf
+Containerfile text eol=lf
+Justfile text eol=lf
+*.png binary
+*.qcow2 binary
+*.iso binary

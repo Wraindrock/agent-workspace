@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep the workflow actions pinned to current releases.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
