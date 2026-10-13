@@ -54,12 +54,19 @@ for dir in build_files/modules/*/; do
     fail "${name}: install.sh missing or not executable"
     continue
   fi
-  if ! grep -q "^MODULE_NAME=${name}$" "${dir}module.env"; then
+  if ! grep -qE "^MODULE_NAME=\"?${name}\"?$" "${dir}module.env"; then
     fail "${name}: MODULE_NAME does not match the directory name"
     continue
   fi
-  if ! grep -q '^MODULE_ENABLED_DEFAULT=[01]$' "${dir}module.env"; then
+  if ! grep -qE '^MODULE_ENABLED_DEFAULT="?[01]"?$' "${dir}module.env"; then
     fail "${name}: MODULE_ENABLED_DEFAULT must be 0 or 1"
+    continue
+  fi
+  # module.env is sourced by build_files/build.sh: unquoted values containing
+  # spaces would be executed as commands instead of assigned.
+  # shellcheck disable=SC1090 # the module.env path is computed per module
+  if ! ( set -euo pipefail; source "${dir}module.env"; [[ -n "${MODULE_NAME}" && -n "${MODULE_DESCRIPTION}" ]] ); then
+    fail "${name}: module.env is not sourceable by bash, quote values that contain spaces"
     continue
   fi
   pass "module ${name}"
