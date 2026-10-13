@@ -59,6 +59,19 @@ else
   pass "actionlint not installed, skipped"
 fi
 
+echo "justfile"
+if command -v just >/dev/null 2>&1; then
+  # Parsing is the check that matters: a broken alias or an unescaped {{ }}
+  # in a recipe body only shows up when someone runs just.
+  if just --list >/dev/null; then
+    pass "Justfile parses (just --list)"
+  else
+    fail "Justfile does not parse (see diagnostics above)"
+  fi
+else
+  pass "just not installed, skipped"
+fi
+
 echo "module contract"
 shopt -s nullglob
 for dir in build_files/modules/*/; do

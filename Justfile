@@ -70,6 +70,26 @@ smoke $target_image=image_name $tag=default_tag:
 verify $target_image=image_name $tag=default_tag: (build target_image tag) && (smoke target_image tag)
 
 # ---------------------------------------------------------------------------
+# Sandbox - run a whole OS in a container to isolate an agent run
+# ---------------------------------------------------------------------------
+# Run the image as a disposable agent sandbox, $PWD mounted at /workspace.
+#   just sandbox                 -> claude
+#   just sandbox codex           -> another harness
+#   just sandbox /bin/bash       -> just a shell inside the sandbox
+[group('Sandbox')]
+sandbox agent="claude" dir="." $target_image=image_name $tag=default_tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # rootless podman maps the container's root to the calling user, so
+    # everything the agent writes into /workspace stays owned by you.
+    exec podman run --rm -it \
+      --hostname agent-sandbox \
+      --volume "${dir}:/workspace:z" \
+      --workdir /workspace \
+      "${target_image}:${tag}" "${agent}"
+
+# ---------------------------------------------------------------------------
 # Release helpers - used by .github/workflows/build.yml
 # ---------------------------------------------------------------------------
 # Print the image name
@@ -110,7 +130,7 @@ tag-images $target_image=image_name $tag=default_tag tags="":
     #!/usr/bin/env bash
     set -euo pipefail
 
-    image_id="$(podman image inspect "${target_image}:${tag}" --format '{{.Id}}')"
+    image_id="$(podman image inspect "${target_image}:${tag}" --format '{{{{.Id}}}}')"
 
     for alias in ${tags}; do
       podman tag "${image_id}" "${target_image}:${alias}"
@@ -180,6 +200,14 @@ build-iso $target_image=image_name $tag=default_tag:
       "${bib_image}" \
       --type anaconda-iso --use-librepo=True --rootfs btrfs \
       "ghcr.io/${repo_organization,,}/${image_name}:${tag}"
+
+# Rebuild the qcow2 from scratch (cleans output/ first)
+[group('Disk images')]
+rebuild-qcow2: clean (build-qcow2)
+
+# Rebuild the ISO from scratch (cleans output/ first)
+[group('Disk images')]
+rebuild-iso: clean (build-iso)
 
 # Run the qcow2 produced by build-qcow2 in a throwaway VM
 [group('Disk images')]

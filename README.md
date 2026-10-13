@@ -63,6 +63,15 @@ user on the host, so everything the agent writes into `/workspace` belongs to
 you. On a booted system the image additionally creates the unprivileged `agent`
 user on first boot.
 
+From a clone of this repository the same command is one recipe:
+
+~~~bash
+just build                # build the image locally
+just sandbox              # run claude against $PWD, in a throwaway OS
+just sandbox codex        # a different harness
+just sandbox /bin/bash    # just a shell inside the sandbox
+~~~
+
 Want systemd and the full OS running in the sandbox? Leave the default entrypoint
 and exec into it:
 

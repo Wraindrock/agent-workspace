@@ -58,6 +58,15 @@ podman run --rm -it --entrypoint /bin/bash \
 你在主机上的用户，agent 写入 `/workspace` 的文件归属你本人。在已启动的裸机/虚拟机
 上，镜像还会在首次开机时创建非特权用户 `agent`。
 
+把仓库克隆下来，同样的命令只差一个 recipe：
+
+~~~bash
+just build                # 在本地构建镜像
+just sandbox              # 用 claude 跑当前目录，系统用完即弃
+just sandbox codex        # 换一个 harness
+just sandbox /bin/bash    # 只进沙箱里要一个 shell
+~~~
+
 想让 systemd 与完整系统在沙箱里跑起来？保留默认入口点，然后 exec 进去：
 
 ~~~bash
