@@ -123,16 +123,18 @@ retry() {
 }
 
 # npm_install_global installs one or more npm packages into the image-wide
-# prefix so every user on the system can run them. npm's default prefix is
-# /usr/local, which may not exist yet on an ostree base image.
+# prefix so every user on the system can run them. Both the prefix and the
+# cache are set explicitly: their defaults (/usr/local and $HOME/.npm) are
+# symlinks into /var on an ostree base image.
 npm_install_global() {
   require_command npm
-  local prefix
+  local prefix cache
   prefix="$(npm config get prefix 2>/dev/null || true)"
   [[ -n "${prefix}" ]] || prefix=/usr/local
-  install -d -m 0755 "${prefix}/bin" "${prefix}/lib" 2>/dev/null || true
+  cache="${NPM_CACHE:-/var/cache/agent-workspace/npm}"
+  install -d -m 0755 "${prefix}/bin" "${prefix}/lib" "${cache}" 2>/dev/null || true
   log "npm install -g: $*"
-  retry 3 npm install --global --no-fund --no-audit --loglevel=error "$@"
+  retry 3 npm install --global --no-fund --no-audit --loglevel=error --cache "${cache}" "$@"
 }
 
 # pipx_install installs a Python application into /opt/pipx, exposed to all users.

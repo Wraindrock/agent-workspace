@@ -4,7 +4,7 @@ set -euo pipefail
 source "${COMMON_LIB:?COMMON_LIB must point at build_files/lib/common.sh}"
 
 dnf5 clean all || true
-rm -rf /var/cache/dnf /var/cache/libdnf5 /var/cache/PackageKit
+rm -rf /var/cache/dnf /var/cache/libdnf5 /var/cache/PackageKit /var/cache/agent-workspace
 find /var/log -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
 rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
 rm -rf /var/tmp/* 2>/dev/null || true
