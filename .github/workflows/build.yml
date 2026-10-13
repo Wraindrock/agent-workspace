@@ -204,7 +204,8 @@ jobs:
           push() {
             local tag="$1" attempt
             for attempt in 1 2 3; do
-              if podman push --authfile "${AUTHFILE}" "${IMAGE}:${tag}"; then
+              if podman push --authfile "${AUTHFILE}" \
+                --digestfile "$RUNNER_TEMP/podman-digest" "${IMAGE}:${tag}"; then
                 return 0
               fi
               echo "push of ${tag} failed on attempt ${attempt}, retrying in 15s"
@@ -218,40 +219,72 @@ jobs:
             push "$tag"
           done < "$RUNNER_TEMP/tags.txt"
 
+      - name: Resolve the published digest
+        if: github.event_name != 'pull_request'
+        id: published
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+          REGISTRY_HOST: ${{ steps.meta.outputs.registry_host }}
+          AUTHFILE: ${{ runner.temp }}/auth.json
+        run: |
+          set -euo pipefail
+          # Ask the registry which manifest the tag now holds. cosign has to sign that
+          # digest: a locally computed one (podman image inspect, RepoDigests) can differ
+          # from the manifest the registry actually stored, and then verification looks
+          # for a signature that was never created.
+          repo_path="${IMAGE#"${REGISTRY_HOST}"/}"
+          basic="$(jq -r --arg host "${REGISTRY_HOST}" '.auths[$host].auth' "${AUTHFILE}")"
+          token="$(curl -fsS -H "Authorization: Basic ${basic}" \
+            "https://${REGISTRY_HOST}/token?scope=repository:${repo_path}:pull&service=${REGISTRY_HOST}" \
+            | jq -r '.token')"
+          digest="$(curl -fsSI \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+            "https://${REGISTRY_HOST}/v2/${repo_path}/manifests/${TAG}" \
+            | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
+          if [[ -z "${digest}" ]]; then
+            echo "the registry reported no digest for ${IMAGE}:${TAG}" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "published ${IMAGE}:${TAG} as ${digest}"
+          if [[ -s "$RUNNER_TEMP/podman-digest" ]]; then
+            echo "podman reported $(cat "$RUNNER_TEMP/podman-digest")"
+          fi
+
       - name: Install cosign
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v3
+        with:
+          # pinned: the legacy sha256-<digest>.sig layout below is what cosign 2.x writes
+          cosign-release: v2.5.2
 
       - name: Sign the published image
         if: github.event_name != 'pull_request'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
-          TAG: ${{ steps.meta.outputs.default_tag }}
+          DIGEST: ${{ steps.published.outputs.digest }}
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
           set -euo pipefail
-          digest="$(podman image inspect --format json "${IMAGE}:${TAG}" \
-            | jq -r '.[0].RepoDigests[0] // empty')"
-          if [[ -z "${digest}" ]]; then
-            echo "no published digest recorded for ${IMAGE}:${TAG}" >&2
-            exit 1
-          fi
-          echo "signing ${digest}"
+          target="${IMAGE}@${DIGEST}"
+          echo "signing ${target}"
           if [[ -n "${SIGNING_SECRET}" ]]; then
             printf '%s' "${SIGNING_SECRET}" > "$RUNNER_TEMP/cosign.key"
-            cosign sign --yes --key "$RUNNER_TEMP/cosign.key" "${digest}"
+            cosign sign --yes --key "$RUNNER_TEMP/cosign.key" "${target}"
             rm -f "$RUNNER_TEMP/cosign.key"
           else
             # keyless: the workflow's OIDC identity is the verification anchor
-            cosign sign --yes "${digest}"
+            cosign sign --yes "${target}"
           fi
 
       - name: Verify the published signature
         if: github.event_name != 'pull_request'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
-          TAG: ${{ steps.meta.outputs.default_tag }}
+          DIGEST: ${{ steps.published.outputs.digest }}
           SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           DOCKER_CONFIG: ${{ runner.temp }}/docker-config
         run: |
@@ -263,4 +296,4 @@ jobs:
           cosign verify \
             --certificate-identity-regexp "^${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${IMAGE}:${TAG}"
+            "${IMAGE}@${DIGEST}"
