@@ -54,6 +54,21 @@ pinned_digest() {
   return 0
 }
 
+# agent_binaries_for prints the executable(s) a declared harness exposes.
+# Recipes record them in the manifest (agentBinaries); an image built before
+# that field existed falls back to the historical "strip a trailing -cli".
+agent_binaries_for() {
+  local name="$1" binaries=""
+  if [[ -r "$MANIFEST_PATH" ]] && have jq; then
+    binaries="$(jq -r --arg name "$name" '
+      (.agentBinaries // {})[$name]
+      | if type == "array" then .[] elif type == "string" then . else empty end
+    ' "$MANIFEST_PATH" 2>/dev/null)"
+  fi
+  [[ -n "$binaries" ]] || binaries="${name%%-cli}"
+  printf '%s\n' "$binaries"
+}
+
 manifest_field() {
   local filter="$1"
   [[ -r "$MANIFEST_PATH" ]] || return 1

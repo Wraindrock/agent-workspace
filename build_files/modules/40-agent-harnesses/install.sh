@@ -48,9 +48,11 @@ for recipe in "${AGENTS_DIR}"/*.sh; do
 
   section "agent ${agent}"
   # shellcheck disable=SC1090
+  # shellcheck disable=SC1090
   (
     . "$recipe"
     install_agent
+    record_value agent-binary "${agent} ${AGENT_BINARIES:-$agent}"
   )
   echo "$agent" >> "${STATE_DIR}/agents.enabled"
   ok "agent ${agent}: installed"

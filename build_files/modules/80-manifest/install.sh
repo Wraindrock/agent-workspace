@@ -12,6 +12,8 @@ mkdir -p "$manifest_dir"
 modules_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "${STATE_DIR}/modules.enabled")"
 agents_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "${STATE_DIR}/agents.enabled")"
 tools_json="$(jq -R -s 'split("\n") | map(select(length > 0))' "${STATE_DIR}/tool" 2>/dev/null || echo '[]')"
+# agent-binary lines look like "<recipe> <command> [more commands]"
+binaries_json="$(jq -R -s 'split("\n") | map(select(length > 0) | split(" ") | {(.[0]): .[1:]}) | add // {}' "${STATE_DIR}/agent-binary" 2>/dev/null || echo '{}')"
 
 version_of() {
   local binary="$1"
@@ -38,6 +40,7 @@ jq -n \
   --arg git "$(version_of git)" \
   --argjson modules "$modules_json" \
   --argjson agents "$agents_json" \
+  --argjson agent_binaries "$binaries_json" \
   --argjson extra_tools "$tools_json" \
   '{
     schemaVersion: ($schema | tonumber),
@@ -51,6 +54,7 @@ jq -n \
     license: $license,
     modules: $modules,
     agents: $agents,
+    agentBinaries: $agent_binaries,
     toolchain: {
       bootc: $bootc,
       podman: $podman,

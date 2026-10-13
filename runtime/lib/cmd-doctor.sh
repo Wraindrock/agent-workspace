@@ -47,13 +47,17 @@ cmd_doctor() {
   done
 
   # 3. declared agents ------------------------------------------------------
-  local declared
+  local declared binary
   for declared in $(cmd_declared_agents); do
-    if have "${declared%%-cli}"; then
-      report_ok "agent ${declared} available"
-    else
-      report_fail "agent ${declared} declared but not runnable"
-    fi
+    # A recipe name is not always the command it installs (claude-code -> claude),
+    # so check every binary the recipe declared in the manifest.
+    for binary in $(agent_binaries_for "$declared"); do
+      if have "$binary"; then
+        report_ok "agent ${declared}: ${binary} available"
+      else
+        report_fail "agent ${declared} declared but ${binary} is not runnable"
+      fi
+    done
   done
 
   # 4. systemd units --------------------------------------------------------

@@ -92,6 +92,26 @@ for agent in $agents; do
   fi
 done
 
+echo "agent recipes"
+recipes=()
+while IFS= read -r recipe; do recipes+=("$recipe"); done < <(
+  find build_files/modules/40-agent-harnesses/agents -type f -name '*.sh' | sort
+)
+for recipe in "${recipes[@]}"; do
+  name="$(basename "${recipe%.sh}")"
+  if ! grep -qE '^install_agent\(\) \{' "$recipe"; then
+    fail "${name}: agent recipe does not define install_agent()"
+    continue
+  fi
+  # The recipe name is not the command it installs (claude-code -> claude), so
+  # every recipe must declare the binaries it provides.
+  if ! grep -qE '^AGENT_BINARIES="[^"]+"$' "$recipe"; then
+    fail "${name}: agent recipe must declare AGENT_BINARIES=\"<command>\""
+    continue
+  fi
+  pass "recipe ${name} (${name} -> $(sed -n 's/^AGENT_BINARIES="\([^"]*\)"$/\1/p' "$recipe"))"
+done
+
 echo "image.env"
 if bash -c 'set -euo pipefail; . ./image.env; [ -n "${IMAGE_NAME}" ] && [ -n "${BASE_IMAGE}" ]'; then
   pass "image.env is sourceable by bash and defines IMAGE_NAME and BASE_IMAGE"

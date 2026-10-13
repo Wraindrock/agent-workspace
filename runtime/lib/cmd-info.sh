@@ -48,11 +48,12 @@ cmd_agents() {
   fi
   local agent binary
   for agent in "${installed[@]}"; do
-    binary="${agent%%-cli}"
-    if have "$binary"; then
-      ok "$agent -> $(command -v "$binary")"
-    else
-      warn "$agent is declared in the manifest but its binary is missing"
-    fi
+    for binary in $(agent_binaries_for "$agent"); do
+      if have "$binary"; then
+        ok "$agent -> $(command -v "$binary")"
+      else
+        warn "$agent is declared in the manifest but its binary ${binary} is missing"
+      fi
+    done
   done
 }

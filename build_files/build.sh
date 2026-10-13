@@ -27,6 +27,7 @@ prepare_state() {
   mkdir -p "${STATE_DIR}"
   : > "${STATE_DIR}/modules.enabled"
   : > "${STATE_DIR}/agents.enabled"
+  : > "${STATE_DIR}/agent-binary"
 }
 
 overlay_system_files() {

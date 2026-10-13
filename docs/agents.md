@@ -21,8 +21,12 @@ override the file with `--build-arg AGENTS=codex,aider`.
 
 ~~~bash
 #!/usr/bin/env bash
+# Sourced by 40-agent-harnesses/install.sh; must define install_agent().
+# shellcheck shell=bash
 # my-agent - one line about what it is
-AGENT_DESCRIPTION="My agent CLI"
+
+# The command(s) this recipe installs, recorded in the image manifest.
+AGENT_BINARIES="my-agent"
 
 install_agent() {
   npm_install_global my-agent-cli
@@ -32,6 +36,12 @@ install_agent() {
 The harness sources the recipe and calls `install_agent()`. Everything from
 `build_files/lib/common.sh` is available, so recipes stay two or three lines in
 the common case.
+
+`AGENT_BINARIES` is the command the recipe puts on `PATH`. Recipe names and
+commands do not always match - `claude-code` installs `claude` - so the build
+records the mapping in `manifest.json` (`agentBinaries`) and `agent-workspace
+agents` / `agent-workspace doctor` check the real binary instead of guessing
+from the name. Space-separate several commands if a recipe ships more than one.
 
 ### Recipes that install from elsewhere
 
@@ -91,7 +101,7 @@ Because the image is public and reproducible, treat every value in
 
 ## Adding an agent
 
-1. Add `agents/<name>.sh` with `AGENT_DESCRIPTION` and `install_agent()`.
+1. Add `agents/<name>.sh` with `AGENT_BINARIES` and `install_agent()`.
 2. Add `<name>=1` to `config/agents.conf`.
 3. `just check` validates that every name in `config/agents.conf` has a recipe.
 4. Rebuild with `just verify` - the smoke test checks the binary exists.

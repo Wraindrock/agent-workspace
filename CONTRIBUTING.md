@@ -47,10 +47,10 @@ not.
 ## Adding an agent
 
 1. `build_files/modules/40-agent-harnesses/agents/<name>.sh` with
-   `AGENT_DESCRIPTION` and `install_agent()`.
+   `AGENT_BINARIES` (the command it installs) and `install_agent()`.
 2. Add `<name>=1` (or `=0`) to `config/agents.conf`.
-3. `just check` verifies the reference resolves; the smoke test verifies the
-   binary exists in the built image.
+3. `just check` verifies the reference resolves and the recipe declares both;
+   the smoke test verifies the declared binary exists in the built image.
 
 ## Changing the image identity
 
