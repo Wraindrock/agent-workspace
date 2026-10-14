@@ -37,8 +37,23 @@ cmd_doctor() {
   done
 
   # 2. declarative files ----------------------------------------------------
+  # The image declares no sysctl drop-in and does no host-level tuning. The
+  # kernel settings it used to write there are wrong for this project in two
+  # different ways, so declaring them was a false promise:
+  #   - inotify instances/watches and vm.max_map_count are not namespaced. The
+  #     kernel charges inotify per *uid*, shared with the host's desktop
+  #     session, so the value a container reads is the host's, never the
+  #     image's; `podman run --sysctl fs.inotify.max_user_instances=...` refuses
+  #     the key outright ("is not allowed"), so the container cannot set it
+  #     either.
+  #   - the rest already hold where they matter: a rootless container gets a
+  #     private network namespace with its own somaxconn (4096 on a current
+  #     kernel) and ip_unprivileged_port_start (1024 there is not a limit, since
+  #     every published port is remapped by the engine anyway).
+  # /etc/sysctl.d belongs to the host, and `install.sh` never touches it.
+  # Only what the image really owns is asserted here.
   local asset
-  for asset in "$MANIFEST_PATH" /etc/agent-workspace/build.env /etc/sysctl.d/90-agent-workspace.conf; do
+  for asset in "$MANIFEST_PATH" /etc/agent-workspace/build.env; do
     if [[ -r "$asset" ]]; then
       report_ok "$asset present"
     else

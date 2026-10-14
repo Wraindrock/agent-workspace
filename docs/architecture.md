@@ -167,8 +167,19 @@ decision.
 | `agent-workspace-health.timer` / `.service` | daily `agent-workspace doctor --quiet` |
 | `90-agent-workspace.preset` | keeps the units' enabled state stable across updates |
 | `00-agent-workspace.conf` | unqualified-search-registries and permissive short names for podman |
-| `90-agent-workspace.conf` | inotify/mmap/socket sysctl tuning for many parallel agents |
 | `agent-workspace.sh` | `profile.d` aliases and `PATH` additions |
+
+There is deliberately no `sysctl.d` drop-in. The image used to ship one, and it
+could not work: the kernel charges inotify instances per *uid*, so a container
+reads the host session's value rather than the image's, while `vm.max_map_count`
+is per-namespace and `net.*` already gets a private namespace per container. The
+engine rejects the non-namespaced keys outright (`sysctl
+'fs.inotify.max_user_instances' is not allowed`), so the container cannot set them
+for itself either. What is left is the host's business, which is why `install.sh`
+never writes to `/etc/sysctl.d` and `tests/smoke.sh` asserts the file is *absent*
+rather than present. The values the drop-in named - inotify watches and instances,
+`vm.max_map_count`, `somaxconn` - are set by the kernel defaults, the engine, or
+the host administrator; this project neither sets nor relies on them.
 
 ## Base images
 
@@ -243,8 +254,20 @@ are in `docs/rollback.md`.
   the only durable place.
 - **No copied upstream scaffolding.** The pipeline is written for this project so
   that the whole repository can carry one licence (MIT).
+- **No host kernel tuning, and no `sudo` for it.** The project targets many Linux
+  distributions and cannot assume a particular host kernel configuration, desktop
+  session or administrator. It sets no `sysctl` values anywhere - not in the
+  image, not through `install.sh`, and not as a documented workaround - and it
+  does not require the host to be tuned before a container boots. `tests/smoke.sh`
+  asserts the absence of the sysctl drop-in rather than its presence, and
+  `tests/integration.sh` diagnoses an exhausted inotify budget by reporting the
+  host's own numbers without asking for a kernel change. When a host setting is
+  genuinely too small (inotify instances shared per *uid*, shared with the desktop
+  session), the answer is to run the container from a session with budget to
+  spare - not to make the project's installation depend on the host's kernel
+  parameters.
 - **No distrobox or toolbox images.** The image runs systemd as PID 1 and
   `install.sh` is the only supported way to run it; a distrobox container that
-  boots systemd still needs the host's inotify budget, which is a host limit and
-  not something the image can fix (see
-  [containers.md](containers.md#troubleshooting)).
+  boots systemd competes for the same per-uid inotify budget as anything else
+  that boots systemd, which is a host limit and not something the image can fix
+  (see [containers.md](containers.md#troubleshooting)).

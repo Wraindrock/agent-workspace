@@ -214,17 +214,33 @@ Root cause: the kernel charges inotify instances per *uid*, not per container
 shares that budget with every container that boots systemd, and once it runs out
 `pasta` and `conmon` log the same exhaustion when a container starts
 (`inotify_init1(): Too many open files, use a timer`, `Failed to create inotify
-fd`). This is a host limit, not an image defect: any systemd container fails the
-same way, and rootless podman cannot raise the limit for you.
+fd`). This is a host limit, not an image defect, and it is not this project's to
+fix: `fs.inotify.*` and `vm.max_map_count` are not namespaced, so an image cannot
+set them for a container (the engine rejects those keys outright with `sysctl
+'fs.inotify.max_user_instances' is not allowed`), and `install.sh` never writes to
+`/etc/sysctl.d`. Any systemd container on the same desktop session fails the same
+way; on a host that still has budget to spare this image boots as it is, with no
+host tuning at all.
 
-Workaround - raise it and persist it:
+First decide whether the budget really is exhausted:
 
 ```bash
-sudo sysctl -w fs.inotify.max_user_instances=1024
-echo 'fs.inotify.max_user_instances=1024' | sudo tee /etc/sysctl.d/99-inotify.conf
+# the limit, and the kernel's own accounting of how much of it this uid spends
+cat /proc/sys/fs/inotify/max_user_instances
+find /proc/*/fd -lname anon_inode:inotify 2>/dev/null | wc -l
 ```
 
-Escape hatch: nothing inside the image can work around the limit.
+- **The count is near the limit** - the graphical session is holding the budget.
+  Nothing inside the image can work around that, and raising it is not required
+  by this project: start the container from a session that is not spending the
+  whole budget (a TTY login rather than the desktop session is the usual way), or
+  stop the other systemd containers competing for it. The budget is charged per
+  *uid*, so a machine running several agents that each boot systemd needs roughly
+  one instance per container on top of what the desktop session already spends.
+- **The count is far below the limit** - inotify is not the problem, and the boot
+  failed for another reason. Read `install.sh logs <name>` rather than tuning
+  anything.
+
 `tests/integration.sh` ("the container the installer creates actually runs")
 detects the error string and prints this diagnosis instead of blaming the image.
 

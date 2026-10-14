@@ -11,23 +11,26 @@ set -euo pipefail
 IMAGE="${1:-}"
 [[ -n "$IMAGE" ]] || { echo "usage: tests/smoke.sh <image ref>" >&2; exit 2; }
 
-command -v podman >/dev/null 2>&1 || { echo "podman is required" >&2; exit 1; }
+# Reach the engine through a variable so the suite is not pinned to one host:
+# any Docker-compatible CLI works, and callers can point it elsewhere.
+ENGINE="${AW_SMOKE_ENGINE:-podman}"
+command -v "${ENGINE}" >/dev/null 2>&1 || { echo "${ENGINE} is required" >&2; exit 1; }
 
 failures=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  fail %s\n' "$1"; failures=$((failures + 1)); }
 
 in_image() {
-  podman run --rm --entrypoint "$1" "$IMAGE" "${@:2}"
+  "${ENGINE}" run --rm --entrypoint "$1" "$IMAGE" "${@:2}"
 }
 
 echo "smoke test: ${IMAGE}"
 
-# The image has to name its own PID 1. `podman run --systemd=always` does not
+# The image has to name its own PID 1. `--systemd=always` does not
 # replace an image command (checked on podman 5.8.4), so a container started
 # without this would inherit the base image's /usr/bin/bash, exit immediately
 # and never boot - which is what install.sh used to create.
-image_cmd="$(podman image inspect "$IMAGE" --format '{{.Config.Cmd}}' 2>/dev/null || true)"
+image_cmd="$("${ENGINE}" image inspect "$IMAGE" --format '{{.Config.Cmd}}' 2>/dev/null || true)"
 if [[ "$image_cmd" == "[/sbin/init]" ]]; then
   pass "image command is /sbin/init"
 else
@@ -76,14 +79,25 @@ else
 fi
 
 for unit in /etc/systemd/system/agent-workspace-firstboot.service \
-            /usr/lib/systemd/system/agent-workspace-health.timer \
-            /etc/sysctl.d/90-agent-workspace.conf; do
+            /usr/lib/systemd/system/agent-workspace-health.timer; do
   if in_image /usr/bin/test -r "$unit"; then
     pass "${unit}"
   else
     fail "${unit}"
   fi
 done
+
+# The image deliberately ships no sysctl drop-in. /etc/sysctl.d belongs to the
+# host, and the kernel settings this project used to declare there take no effect
+# in a container: the kernel charges inotify per *uid*, so a container reads the
+# host session's value, and `podman run --sysctl fs.inotify...` rejects the key
+# outright. Assert the absence, so the dead configuration cannot come back
+# unnoticed as "tuning that was already applied".
+if in_image /usr/bin/test ! -e /etc/sysctl.d/90-agent-workspace.conf; then
+  pass "no sysctl drop-in in the image"
+else
+  fail "/etc/sysctl.d/90-agent-workspace.conf is back, but it cannot take effect in a container"
+fi
 
 # The ostree symlinks /home, /opt, /usr/local and /root have to resolve in the
 # image: installers write through them during the build, a dangling /opt made

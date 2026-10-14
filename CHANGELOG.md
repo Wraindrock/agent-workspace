@@ -8,6 +8,80 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 `agent-workspace` CLI. Day-to-day image builds are identified by tag
 (`YYYYMMDD`, `YYYYMMDD-<sha>`) rather than by version number.
 
+## [0.1.2] - 2026-10-15
+
+The project stops depending on the host's kernel, and starts enforcing the
+surface it promises not to break.
+
+### Fixed
+
+- The image no longer ships `/etc/sysctl.d/90-agent-workspace.conf`. It could not
+  work: the kernel charges inotify instances per *uid*, so a container always read
+  the host session's value rather than the image's, while `fs.inotify.*` and
+  `vm.max_map_count` are not namespaced and the engine rejects them outright
+  (`Error: sysctl 'fs.inotify.max_user_instances' is not allowed`). The file was a
+  promise the image could not keep; what remains is the host's business. Neither
+  `install.sh` nor any documented workaround writes to `/etc/sysctl.d` any more.
+  `tests/smoke.sh` asserts the file is *absent*, and `tests/decoupling.sh` fails if
+  it comes back.
+- `firstboot` provisioning completes even when the container's user namespace
+  cannot name the agent's uid. It used `install -d -o agent -g agent` on the
+  agent's home, which is a volume: a rootless container whose `uid_map` covers a
+  single id answered `install: cannot change owner and permissions of
+  '/var/home/agent/agent-workspace': Invalid argument`, and `set -euo pipefail`
+  aborted the unit before it wrote `/var/lib/agent-workspace/.provisioned`. The
+  completion marker was then never written, the unit reported `failed`, and every
+  boot re-provisioned. Ownership is now best effort and tells the two cases apart:
+  a uid the namespace cannot represent is logged as such and skipped (the agent
+  still owns the files from inside the container), while a real failure - `ENOSPC`,
+  `EROFS`, `EPERM` on a foreign mount - is reported as one. The marker is written
+  last and unconditionally, so firstboot is idempotent. `loginctl enable-linger`
+  no longer reports a bus-less container as an error either.
+
+### Added
+
+- `tests/contract.sh` - 168 assertions freezing the declarative surface that
+  `CHANGELOG.md` says SemVer covers: the `install.sh` subcommands and their
+  options, the `config/*.conf` and `image.env` keys, and the `agent-workspace`
+  CLI's subcommands. A pull request that changes the public surface now fails CI
+  until the change is declared.
+- `tests/portability.sh` - asserts the image boots on a host whose kernel settings
+  were never tuned: PID 1 has to come up as systemd and the container has to stay
+  running. It *records* the host's `fs.inotify.max_user_instances` instead of
+  demanding a value, so a tuned host is not a precondition
+  (`AW_PORTABILITY_REQUIRE_STOCK=1` opts into the strict form).
+- `tests/decoupling.sh` - the behavioural half of the decoupling contract: the
+  sysctl drop-in stays deleted, `doctor` no longer requires it, and no test script
+  hard-codes `podman` instead of reaching the engine through a configurable
+  variable. Its assertions are themselves checked against a predicate that must be
+  able to fail, so they cannot decay into decoration.
+- `tests/firstboot.sh` - the provisioning contract: the marker is written last and
+  unconditionally, the unit keeps its `ConditionPathExists` guard, an unrepresentable
+  uid is skipped rather than fatal, and `/proc/self/uid_map` columns are read in the
+  right order.
+- `just verify-all`, and `just static` / `just static-all` for the engine-free half.
+  `just verify` now reaches `containers-full` - it silently dropped
+  `tests/integration.sh` before, because `just` allows one `&&` chain per recipe.
+
+### Changed
+
+- CI runs all eight test scripts on every pull request, and `tests/lint.sh` fails
+  if a script exists that CI does not run.
+- `tests/smoke.sh` takes the engine from `AW_SMOKE_ENGINE` (default `podman`)
+  instead of pinning itself to one engine, matching the rest of the suite.
+- `tests/integration.sh` removes the installer's state directory when it cleans up.
+  It only removed the container, so the second run in a row saw `install.sh create`
+  report "already managed; skipping" and then failed on the container it never
+  created. The suite is a green-then-red trap no longer.
+- The inotify exhaustion diagnosis in `docs/containers.md` and
+  `tests/integration.sh` reports the host's own numbers (`max_user_instances`, the
+  live instance count) and points at the session rather than asking for `sudo`.
+  `docs/architecture.md` records "no host kernel tuning, and no `sudo` for it" as a
+  deliberate non-goal.
+- README and `docs/` corrections: the module-60 description no longer claims sysctl
+  tuning, the test lists name all eight scripts, and the repository layout matches
+  the tree.
+
 ## [0.1.1] - 2026-10-14
 
 The container `install.sh` creates now actually boots. Both fixes live in the
@@ -168,5 +242,6 @@ it as isolated agent containers.
   module and agent recipe contracts, which user the container runs the agent as,
   and the snapshot guarantees that `doctor` checks.
 
+[0.1.2]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.2
 [0.1.1]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.0

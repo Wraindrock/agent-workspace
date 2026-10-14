@@ -223,16 +223,40 @@ else
 fi
 
 echo "ci coverage"
-# README.md promises that every pull request runs all three test scripts, so
-# assert it here: a script CI silently stops running has to fail the lint
-# instead of quietly drifting away from the documentation.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh; do
+# README.md promises that every pull request runs every test script, so assert
+# it here: a script CI silently stops running has to fail the lint instead of
+# quietly drifting away from the documentation. Adding a test means adding it to
+# this list *and* to build.yml, in the same change.
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else
     fail "build.yml does not run ${script}"
   fi
 done
+
+echo "test hygiene"
+# `install.sh create` records the container under $DATA_HOME and skips a name
+# that already has state there -- reporting success while creating nothing. The
+# integration test therefore has to remove that state, not just the container:
+# when it did not, every second run failed with a green `install.sh create`
+# followed by "the created container is missing, not running".
+integration_test=tests/integration.sh
+if grep -qF 'agent-workspace/containers/${NAME}' "${integration_test}"; then
+  pass "integration cleanup removes the installer state directory"
+else
+  fail "integration cleanup leaves \$DATA_HOME state behind, so the next run skips create"
+fi
+# The test takes the engine as configuration, so it must not reach past it to a
+# hardcoded binary: that would make --engine=... decorative.
+engine_calls="$(grep -nE '(^|[^/[:alnum:]_-])podman ' "${integration_test}" \
+  | grep -vE '^[0-9]+:[[:space:]]*#' \
+  | grep -vE 'ENGINE=' || true)"
+if [[ -z "${engine_calls}" ]]; then
+  pass "integration test drives the configured engine"
+else
+  fail "integration test calls podman directly instead of \"\${ENGINE}\": ${engine_calls}"
+fi
 
 echo "image labels"
 # CI publishes the image, the Justfile builds it locally, and both are supposed

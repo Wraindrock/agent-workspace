@@ -156,6 +156,38 @@ jobs:
           TAG: ${{ steps.meta.outputs.default_tag }}
         run: bash tests/integration.sh "${LOCAL_IMAGE}:${TAG}"
 
+      # Proof that the image is portable rather than dependent on a tuned host:
+      # PID 1 has to come up as systemd, and the run records the runner's
+      # inotify budget instead of demanding a particular value. Runs after
+      # integration because the two share the engine.
+      - name: Host-decoupling portability test
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: bash tests/portability.sh "${LOCAL_IMAGE}:${TAG}"
+
+      # Behavioural half of the P0 decoupling contract: the sysctl drop-in stays
+      # deleted and the assertions that guard it still have a failing branch.
+      # No engine and no privileges needed, so it cannot be skipped by a runner
+      # without rootless podman.
+      - name: Host-tuning decoupling assertions
+        run: bash tests/decoupling.sh
+
+      # The declared compatibility surface - config/*.conf, image.env, install.sh
+      # and the agent-workspace CLI. Static and CLI-level, so like the decoupling
+      # assertions it needs no engine, no root and no network; it is what fails
+      # when a pull request changes the public surface without saying so.
+      - name: Compatibility surface contract
+        run: bash tests/contract.sh
+
+      # firstboot provisioning is idempotent and survives a uid its user
+      # namespace cannot name. The completion marker, the unit's guard and the
+      # column order of /proc/self/uid_map are all text-level, so this needs no
+      # engine either - a regression here is invisible until a user's container
+      # re-provisions itself on every boot.
+      - name: firstboot provisioning contract
+        run: bash tests/firstboot.sh
+
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
       # ------------------------------------------------------------------

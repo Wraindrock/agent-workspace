@@ -68,13 +68,70 @@ smoke $target_image=image_name $tag=default_tag:
 integration $target_image=image_name $tag=default_tag:
     bash tests/integration.sh "${target_image}:${tag}"
 
-# Re-run every container-level test against an image that is already built
+# Assert the image boots on a host that was never tuned: PID 1 must be systemd,
+# and the run records the host's inotify budget rather than demanding one. It
+# does not drive install.sh, so it also works where the installer state
+# directory is not writable.
 [group('Build')]
-containers $target_image=image_name $tag=default_tag: (smoke target_image tag) && (integration target_image tag)
+portability $target_image=image_name $tag=default_tag:
+    bash tests/portability.sh "${target_image}:${tag}"
 
-# Rebuild the image and re-run every container-level test
+# Behavioural half of the decoupling contract (the sysctl drop-in stays deleted,
+# the assertions guarding it still have a failing branch). Text-level, so it
+# needs no engine and no privileges and can run anywhere.
+[group('Lint')]
+decoupling:
+    bash tests/decoupling.sh
+
+# The declared compatibility surface (config/*.conf, image.env, install.sh and
+# the agent-workspace CLI, the set CHANGELOG.md names). Static and CLI-level
+# only, so it needs no image, no engine and no root: it runs on every pull
+# request, including one made before the first release exists.
+[group('Lint')]
+contract:
+    bash tests/contract.sh
+
+# firstboot provisioning is idempotent and survives a uid the container's user
+# namespace cannot name. The marker, the unit's guard and the uid_map column
+# order are all text-level here, so like the other contracts it needs no engine.
+[group('Lint')]
+firstboot:
+    bash tests/firstboot.sh
+
+# Re-run every container-level test against an image that is already built,
+# plus the engine-free decoupling assertions.
 [group('Build')]
-verify $target_image=image_name $tag=default_tag: (build target_image tag) && (containers target_image tag)
+containers $target_image=image_name $tag=default_tag: (smoke target_image tag) && (portability target_image tag)
+[group('Build')]
+containers-all $target_image=image_name $tag=default_tag: (containers target_image tag) && (integration target_image tag)
+[group('Build')]
+containers-full $target_image=image_name $tag=default_tag: (containers-all target_image tag) && (decoupling)
+# static: source-level only, no image required. The engine-free half of the
+# suite: the text-level contract tests. Kept as its own name for the same
+# one-`&&`-per-recipe reason as the others, and because it is the part that needs
+# neither an image nor a usable engine - run this on a checkout before anything
+# has been built.
+[group('Lint')]
+static: (decoupling) && (contract)
+# The engine-free suite plus the firstboot contract. Separate from `static` for
+# the usual one-`&&`-per-recipe reason; `verify-all` is what runs everything.
+[group('Lint')]
+static-all: (static) && (firstboot)
+
+# verify: requires a built image. Rebuilds it first, then re-runs every test that
+# exercises it. Depends on `containers-full`, not `containers`: `just` allows only
+# one `&&` chain per recipe, so the extra names exist to carry the further chains.
+# The source-level tests are deliberately not here - they need no image, and
+# folding them in would make a static check un-runnable until a build finished.
+# `static` is that half; `verify-all` is the two together.
+[group('Build')]
+verify $target_image=image_name $tag=default_tag: (build target_image tag) && (containers-full target_image tag)
+# Everything `verify` proves, plus the engine-free contract and decoupling
+# assertions that need no image at all. This is the documented "runs
+# everything" entry point; `verify` stops short of it only because the two
+# remaining tests do not need the image it just built.
+[group('Build')]
+verify-all $target_image=image_name $tag=default_tag: (verify target_image tag) && (static-all)
 
 # ---------------------------------------------------------------------------
 # Containers - the only way this project is used

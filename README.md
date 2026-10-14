@@ -130,7 +130,7 @@ Modules run in filename order. Each directory in `build_files/modules/` contains
 | `30-agent-toolchains` | gcc/make, gh, just, Node.js + pnpm/tsx/typescript, Python + pipx, uv |
 | `40-agent-harnesses` | the agent CLIs selected in `config/agents.conf` |
 | `50-devtools` | neovim, ripgrep, tmux, tree, zsh, ShellCheck, direnv, fd-find, git-delta, htop, make (optional bat, btop, eza, starship) |
-| `60-system-config` | systemd units, sysctl tuning, registries config, `/etc/skel` |
+| `60-system-config` | systemd units, registries config, profile.d, `/etc/skel` |
 | `80-manifest` | writes the image manifest and module list |
 | `90-cleanup` | drops caches and logs so the image stays lean |
 
@@ -256,18 +256,24 @@ git clone https://github.com/wraindrock/agent-workspace
 cd agent-workspace
 just check     # repository lint, no podman required
 just build     # build the image with podman
-just verify    # build + container self test + real-container integration test
+just verify    # build + every container-level test
+just verify-all # the above plus the engine-free contract tests
 ~~~
 
 Requirements: `podman` (or `docker`) and `just`, plus `bash` 4.4+ for `install.sh`.
 The lint uses `shellcheck`, `actionlint`, `just` and `python3` + `pyyaml` when they
 are present and skips them when they are not; `tests/smoke.sh` separately needs `jq`.
 CI installs `actionlint` and `just` explicitly, and relies on the runner image for
-`shellcheck`, `jq` and `python3`. Every pull request runs the same `tests/lint.sh`,
-`tests/install.sh`, `tests/smoke.sh` and `tests/integration.sh` - the last one
-creates a real container through `install.sh` and needs a host where rootless
-podman can boot systemd (see [docs/containers.md](docs/containers.md#troubleshooting)),
-so nothing is "only tested on my machine".
+`shellcheck`, `jq` and `python3`. Every pull request runs the same eight test
+scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
+`tests/integration.sh`, `tests/portability.sh`, `tests/decoupling.sh`,
+`tests/contract.sh` and `tests/firstboot.sh`. `tests/integration.sh` creates a real
+container through `install.sh`, and `tests/portability.sh` proves the image boots
+on a host whose kernel settings were never tuned; both need a host where rootless
+podman can boot systemd (see
+[docs/containers.md](docs/containers.md#troubleshooting)). The other four are
+static or CLI-level, so they need no engine, no root and no network - the suite is
+not "only tested on my machine".
 
 ## Repository layout
 
@@ -282,9 +288,10 @@ build_files/
   lib/common.sh          shared build helpers
   modules/<NN-name>/      one module per concern, each with module.env + install.sh
 config/                  modules.conf, agents.conf - the declarative switches
-system_files/            verbatim overlay copied to / (systemd, sysctl, profile.d)
+system_files/            verbatim overlay copied to / (systemd, profile.d, registries)
 runtime/                 the in-image CLI (version, manifest, modules, agents, status, doctor)
-tests/                   lint.sh, smoke.sh, install.sh + a fake engine fixture
+tests/                   lint, install, smoke, integration, portability,
+                         decoupling, contract, firstboot + a fake engine fixture
 docs/                    architecture, modules, agents, containers, rollback
 ~~~
 

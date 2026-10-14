@@ -120,7 +120,7 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 | `30-agent-toolchains` | gcc/make、gh、just、Node.js + pnpm/tsx/typescript、Python + pipx、uv |
 | `40-agent-harnesses` | 依据 `config/agents.conf` 选择安装的 agent CLI |
 | `50-devtools` | neovim、ripgrep、tmux、tree、zsh、ShellCheck、direnv、fd-find、git-delta、htop、make（可选 bat、btop、eza、starship） |
-| `60-system-config` | systemd 单元、sysctl 调优、registries 配置、`/etc/skel` |
+| `60-system-config` | systemd 单元、registries 配置、profile.d、`/etc/skel` |
 | `80-manifest` | 写出镜像 manifest 与模块清单 |
 | `90-cleanup` | 清理缓存与日志，保持镜像精简 |
 
@@ -225,14 +225,20 @@ git clone https://github.com/wraindrock/agent-workspace
 cd agent-workspace
 just check     # 仓库自检，不需要 podman
 just build     # 用 podman 构建镜像
-just verify    # 构建 + 容器自检
+just verify    # 构建 + 全部容器级测试
+just verify-all # 上述内容再加无需引擎的契约测试
 ~~~
 
 依赖：`podman`（或 `docker`）与 `just`，运行 `install.sh` 另需 bash 4.4+。
 仓库自检在装了 `shellcheck`、`actionlint`、`just`、`python3`+`pyyaml` 时使用它们，
 没装就跳过；`tests/smoke.sh` 另需 `jq`。CI 只显式安装 `actionlint` 与 `just`，其余
-依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套
-`tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`，所以没有「只在我机器上测过」这种事。
+依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套八个测试
+脚本：`tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`、`tests/integration.sh`、
+`tests/portability.sh`、`tests/decoupling.sh`、`tests/contract.sh`、
+`tests/firstboot.sh`。其中 `integration` 会通过 `install.sh` 创建真实容器，
+`portability` 证明镜像在从未调优过内核参数的宿主上也能启动，两者都需要宿主能用
+rootless podman 启动 systemd；其余四个是静态或 CLI 级测试，不需要引擎、root 与网络。
+所以没有「只在我机器上测过」这种事。
 
 ## 目录结构
 
@@ -244,9 +250,10 @@ Containerfile            构建契约：context 阶段 + 镜像阶段
 Justfile                 本地构建、镜像检查与发布辅助 recipe
 build_files/             模块化的构建脚本（build.sh + lib/ + modules/）
 config/                  声明式开关：modules.conf、agents.conf
-system_files/            原样覆盖到 / 的文件（systemd、sysctl、profile.d）
+system_files/            原样覆盖到 / 的文件（systemd、profile.d、registries）
 runtime/                 镜像内的 agent-workspace CLI（version、manifest、modules、agents、status、doctor）
-tests/                   lint.sh、smoke.sh、install.sh 以及假引擎桩
+tests/                   lint、install、smoke、integration、portability、
+                         decoupling、contract、firstboot 以及假引擎桩
 docs/                    架构、模块、agent、容器、回滚文档
 ~~~
 
