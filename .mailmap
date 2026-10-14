@@ -5,6 +5,10 @@
 # hash (and so do the image tags that embed those hashes). History is
 # deliberately not rewritten -- see CONTRIBUTING.md, "Commit messages".
 #
+# Only the address-case spelling of this repository's own account is folded
+# here. The other early author, `Ian <ian@users.noreply.github.com>`, is a
+# separate contributor and is left as himself, so `git log --author=ian` keeps
+# finding his commits.
+#
 # Proper Name <proper@address> Commit Name <commit@address>
 Wraindrock <Wraindrock@users.noreply.github.com> <wraindrock@users.noreply.github.com>
-Wraindrock <Wraindrock@users.noreply.github.com> Ian <ian@users.noreply.github.com>

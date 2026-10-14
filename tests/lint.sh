@@ -284,20 +284,27 @@ else
 fi
 
 echo "author identity"
-# The repository authors everything as one identity. History is deliberately
-# not rewritten for the older spellings (the published image tags embed commit
+# The repository canonicalises the address spelling of its own account. History
+# is deliberately not rewritten for it (the published image tags embed commit
 # hashes), so .mailmap is the whole of the fix and this is what must keep
 # holding. check-mailmap works on any checkout depth, unlike git shortlog.
+# The other early author is a different person: folding him in would hide his
+# commits from `git log --author=ian`, so the map must leave him alone.
 canonical='Wraindrock <Wraindrock@users.noreply.github.com>'
+separate='Ian <ian@users.noreply.github.com>'
 if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
-  for spelling in '<wraindrock@users.noreply.github.com>' 'Ian <ian@users.noreply.github.com>'; do
-    mapped="$(git check-mailmap "$spelling" 2>/dev/null || true)"
-    if [[ "$mapped" == "$canonical" ]]; then
-      pass ".mailmap folds ${spelling} into the canonical author"
-    else
-      fail ".mailmap leaves ${spelling} as [${mapped:-nothing}]"
-    fi
-  done
+  mapped="$(git check-mailmap '<wraindrock@users.noreply.github.com>' 2>/dev/null || true)"
+  if [[ "$mapped" == "$canonical" ]]; then
+    pass ".mailmap folds <wraindrock@users.noreply.github.com> into the canonical author"
+  else
+    fail ".mailmap leaves <wraindrock@users.noreply.github.com> as [${mapped:-nothing}]"
+  fi
+  mapped="$(git check-mailmap "$separate" 2>/dev/null || true)"
+  if [[ "$mapped" == "$separate" ]]; then
+    pass ".mailmap keeps ${separate} as a separate author"
+  else
+    fail ".mailmap folds ${separate} into [${mapped:-nothing}]"
+  fi
 else
   pass "not a git checkout, skipped the author identity check"
 fi

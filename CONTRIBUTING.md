@@ -117,10 +117,13 @@ dependency pull requests readable.
 
 Commits are authored as `Wraindrock <Wraindrock@users.noreply.github.com>`, which
 is what this repository's local git config sets. A few early commits carry the
-same person under other spellings (`<wraindrock@...>`, `Ian <ian@...>`), so
-`.mailmap` folds them into that one display identity. History is deliberately
-*not* rewritten for this: the published image tags embed commit hashes, and a
-rewrite would orphan every one of them.
+same account under a lower-case address (`<wraindrock@...>`), so `.mailmap` folds
+that spelling into the canonical identity. The other early author,
+`Ian <ian@users.noreply.github.com>`, is a different person and is deliberately
+left as himself: folding him in would hide his commits from
+`git log --author=ian`. History is *not* rewritten for either of them, because
+the published image tags embed commit hashes and a rewrite would orphan every
+one of them.
 
 ## Reporting bugs and security issues
 
