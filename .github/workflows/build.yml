@@ -147,6 +147,15 @@ jobs:
             exit 1
           fi
 
+      # The installer tests fake the engine and the self test overrides the image
+      # command, so this is the only check that proves install.sh can boot the
+      # image that was just built.
+      - name: Installer end-to-end test
+        env:
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+          TAG: ${{ steps.meta.outputs.default_tag }}
+        run: bash tests/integration.sh "${LOCAL_IMAGE}:${TAG}"
+
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
       # ------------------------------------------------------------------

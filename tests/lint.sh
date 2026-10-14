@@ -226,7 +226,7 @@ echo "ci coverage"
 # README.md promises that every pull request runs all three test scripts, so
 # assert it here: a script CI silently stops running has to fail the lint
 # instead of quietly drifting away from the documentation.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh; do
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else
@@ -254,6 +254,33 @@ if grep -qE -- '--label "org\.opencontainers\.image\.version=\$\{\{ steps\.meta\
   fail "build.yml labels the image version with a git sha (revision is the sha)"
 else
   pass "build.yml labels the image version with the tag, not a git sha"
+fi
+
+echo "ostree layout"
+# Every ostree symlink the image writes through has to be materialised by
+# 00-preflight and checked by build.sh. A dangling /opt broke pipx on every
+# build; a dangling /home is worse, because the engine has to create the agent
+# home mount point at container start and fails the whole create with
+# `crun: creating '/home/agent': openat2 'home': No such file or directory`.
+preflight_dirs="$(sed -n 's/.*for dir_mode in \(.*\); do.*/\1/p' build_files/modules/00-preflight/install.sh | head -1)"
+verify_dirs="$(sed -n '/^verify_layout()/,/^}/p' build_files/build.sh | sed -n 's/.*for dir in \(.*\); do.*/\1/p' | head -1)"
+for dir in /home /opt /usr/local /root; do
+  case " ${preflight_dirs} " in
+    *"\"${dir}:"*) pass "00-preflight materialises ${dir}";;
+    *) fail "00-preflight does not materialise ${dir}";;
+  esac
+  case " ${verify_dirs} " in
+    *" ${dir} "*) pass "verify_layout checks ${dir}";;
+    *) fail "verify_layout does not check ${dir}";;
+  esac
+done
+# The image has to name systemd as its own command: podman's --systemd=always
+# does not replace one, so an image without this runs the inherited bash and
+# exits instead of booting.
+if grep -qE '^CMD \["/sbin/init"\]$' Containerfile; then
+  pass 'Containerfile sets CMD ["/sbin/init"]'
+else
+  fail 'Containerfile does not set CMD ["/sbin/init"]'
 fi
 
 echo "author identity"

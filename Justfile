@@ -60,9 +60,21 @@ build $target_image=image_name $tag=default_tag:
 smoke $target_image=image_name $tag=default_tag:
     bash tests/smoke.sh "${target_image}:${tag}"
 
-# Rebuild the image and re-run the container self test
+# Boot the built image through install.sh on the real engine. The self test
+# overrides the image command, so only this proves the container the installer
+# creates actually runs. It needs a host whose rootless podman can start systemd
+# (if it fails with "Too many open files", see docs/containers.md).
 [group('Build')]
-verify $target_image=image_name $tag=default_tag: (build target_image tag) && (smoke target_image tag)
+integration $target_image=image_name $tag=default_tag:
+    bash tests/integration.sh "${target_image}:${tag}"
+
+# Re-run every container-level test against an image that is already built
+[group('Build')]
+containers $target_image=image_name $tag=default_tag: (smoke target_image tag) && (integration target_image tag)
+
+# Rebuild the image and re-run every container-level test
+[group('Build')]
+verify $target_image=image_name $tag=default_tag: (build target_image tag) && (containers target_image tag)
 
 # ---------------------------------------------------------------------------
 # Containers - the only way this project is used
