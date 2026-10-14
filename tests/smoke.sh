@@ -23,6 +23,17 @@ in_image() {
 
 echo "smoke test: ${IMAGE}"
 
+# The image has to name its own PID 1. `podman run --systemd=always` does not
+# replace an image command (checked on podman 5.8.4), so a container started
+# without this would inherit the base image's /usr/bin/bash, exit immediately
+# and never boot - which is what install.sh used to create.
+image_cmd="$(podman image inspect "$IMAGE" --format '{{.Config.Cmd}}' 2>/dev/null || true)"
+if [[ "$image_cmd" == "[/sbin/init]" ]]; then
+  pass "image command is /sbin/init"
+else
+  fail "image command is [${image_cmd:-empty}], want [/sbin/init]"
+fi
+
 if in_image /usr/bin/agent-workspace version >/dev/null; then
   pass "agent-workspace version"
 else
@@ -74,17 +85,27 @@ for unit in /etc/systemd/system/agent-workspace-firstboot.service \
   fi
 done
 
-# The ostree symlinks /opt, /usr/local and /root have to resolve in the image:
-# installers write through them during the build, and a dangling /opt made
+# The ostree symlinks /home, /opt, /usr/local and /root have to resolve in the
+# image: installers write through them during the build, a dangling /opt made
 # `pipx ensurepath --global` fail on every build (and the opt-in aider recipe
-# abort the build outright).
-for dir in /opt /usr/local /root; do
+# abort the build outright), and a dangling /home breaks container creation -
+# the engine has to create the mount point of the agent home volume and reports
+# `crun: creating '/home/agent': openat2 'home': No such file or directory`.
+for dir in /home /opt /usr/local /root; do
   if in_image /usr/bin/test -e "$dir"; then
     pass "${dir} resolves"
   else
     fail "${dir} is a dangling symlink"
   fi
 done
+
+# install.sh mounts the agent's home volume at /home/<user>; the engine creates
+# that directory inside the container, so the parent has to be usable.
+if in_image /bin/bash -c 'install -d -m 0755 /home/agent && test -d /home/agent'; then
+  pass "the agent home mount point can be created"
+else
+  fail "the agent home mount point /home/agent cannot be created"
+fi
 
 if in_image /bin/bash -c 'python3 -m pipx ensurepath --global' >/dev/null 2>&1; then
   pass "pipx ensurepath --global"

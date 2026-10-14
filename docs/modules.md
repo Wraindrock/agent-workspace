@@ -107,7 +107,7 @@ itself truthfully.
 
 | Module | Packages / actions | Notable side effects |
 | --- | --- | --- |
-| `00-preflight` | none | writes `/etc/agent-workspace/build.env` (base image, version, Fedora release), creates `/usr/share/agent-workspace`, `/usr/lib/agent-workspace`, `/etc/agent-workspace` and `/var/lib/agent-workspace`, and materialises the `/opt`, `/usr/local` and `/root` symlink targets (`/var/opt`, `/var/usrlocal`, `/var/roothome`) |
+| `00-preflight` | none | writes `/etc/agent-workspace/build.env` (base image, version, Fedora release), creates `/usr/share/agent-workspace`, `/usr/lib/agent-workspace`, `/etc/agent-workspace` and `/var/lib/agent-workspace`, and materialises the `/home`, `/opt`, `/usr/local` and `/root` symlink targets (`/var/home`, `/var/opt`, `/var/usrlocal`, `/var/roothome`) |
 | `10-base-packages` | bash-completion, bind-utils, ca-certificates, curl, dnf5-plugins, findutils, git, git-lfs, gnupg2, hostname, iproute, iputils, jq, less, openssh-clients, procps-ng, psmisc, rsync, sudo, tar, unzip, which, wget, xz, zip, zstd (optional `yq`) | installs the git-lfs system hooks |
 | `20-container-tools` | podman, buildah, skopeo, crun, fuse-overlayfs, netavark, aardvark-dns, catatonit, passt, podman-docker (optional containernetworking-plugins, slirp4netns) | enables `podman.socket`, writes root's sub-id range, creates `/etc/containers/registries.conf.d`, warns when `newuidmap` is missing |
 | `30-agent-toolchains` | gcc, gcc-c++, gh, just, make, nodejs, npm, openssl-devel, python3, python3-devel, python3-pip, python3-wheel, pipx, zlib-devel | `pnpm`, `tsx`, `typescript` globally; `uv` in `/usr/local/bin`, installed from the upstream script when the package is unavailable; records the node and python versions |

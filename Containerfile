@@ -66,3 +66,14 @@ RUN --mount=type=bind,from=ctx,source=/ctx,target=/ctx \
 
 # Fail the build if the result is not a valid bootc image.
 RUN bootc container lint
+
+# --------------------------------------------------------------------------
+# systemd is PID 1.
+#
+# `podman run --systemd=always` does not replace a container's command (checked
+# against podman 5.8.4): it only prepares the systemd-friendly mounts and the
+# stop signal. Without this CMD the container inherits the base image's
+# `/usr/bin/bash`, exits within milliseconds, and install.sh reports a container
+# that never boots.
+# --------------------------------------------------------------------------
+CMD ["/sbin/init"]

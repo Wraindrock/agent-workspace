@@ -50,7 +50,7 @@ install_runtime               # runtime/lib -> /usr/lib/agent-workspace
                               # runtime/bin -> /usr/bin
 run_modules                   # build_files/modules/*/ in filename order
 summarize
-verify_layout                 # /opt, /usr/local and /root must not be dangling
+verify_layout                 # /home, /opt, /usr/local and /root must not be dangling
 ~~~
 
 Each module is a directory with two files:
@@ -243,3 +243,8 @@ are in `docs/rollback.md`.
   the only durable place.
 - **No copied upstream scaffolding.** The pipeline is written for this project so
   that the whole repository can carry one licence (MIT).
+- **No distrobox or toolbox images.** The image runs systemd as PID 1 and
+  `install.sh` is the only supported way to run it; a distrobox container that
+  boots systemd still needs the host's inotify budget, which is a host limit and
+  not something the image can fix (see
+  [containers.md](containers.md#troubleshooting)).

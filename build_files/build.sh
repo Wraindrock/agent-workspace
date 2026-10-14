@@ -133,15 +133,18 @@ summarize() {
 
 # verify_layout fails the build when a top-level directory the image writes
 # through is left dangling. 00-preflight materialises the targets of the
-# ostree symlinks (/opt -> /var/opt, /usr/local -> /var/usrlocal,
-# /root -> /var/roothome); a module that undoes that, or a base image that adds
-# a new one, would otherwise ship an image whose installers write nowhere.
+# ostree symlinks (/home -> /var/home, /opt -> /var/opt,
+# /usr/local -> /var/usrlocal, /root -> /var/roothome); a module that undoes
+# that, or a base image that adds a new one, would otherwise ship an image whose
+# installers write nowhere - and whose agent containers cannot even be created,
+# because the engine has to make the mount point of the agent home volume
+# (/home/<user>) inside the container.
 verify_layout() {
   local dir
-  for dir in /opt /usr/local /root; do
+  for dir in /home /opt /usr/local /root; do
     [[ -e "${dir}" ]] || die "${dir} is a dangling symlink in the built image"
   done
-  ok "layout: /opt, /usr/local and /root resolve"
+  ok "layout: /home, /opt, /usr/local and /root resolve"
 }
 
 main() {
