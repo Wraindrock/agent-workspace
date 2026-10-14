@@ -193,3 +193,46 @@ snapshot archives (they must be readable tarballs), and for containers created w
 that the host port is still published. It never changes anything; it is the check to
 run before you need a rollback. `--strict` exits non-zero when anything is
 wrong, which is what the test suite uses.
+
+## Troubleshooting
+
+### A container exits immediately, or a systemd container stops mid-boot
+
+Symptoms: `install.sh create` reports a container that is not running,
+`install.sh logs <name>` is empty or ends at the boot, and inside any container
+that boots systemd (including `distrobox create --init`) boot stops at:
+
+```text
+Failed to create control group inotify object: Too many open files
+Failed to allocate manager object: Too many open files
+[!!!!!!] Failed to allocate manager object.
+Exiting PID 1...
+```
+
+Root cause: the kernel charges inotify instances per *uid*, not per container
+(`fs.inotify.max_user_instances`, 128 on a default Fedora). Your desktop session
+shares that budget with every container that boots systemd, and once it runs out
+`pasta` and `conmon` log the same exhaustion when a container starts
+(`inotify_init1(): Too many open files, use a timer`, `Failed to create inotify
+fd`). This is a host limit, not an image defect: any systemd container fails the
+same way, and rootless podman cannot raise the limit for you.
+
+Workaround - raise it and persist it:
+
+```bash
+sudo sysctl -w fs.inotify.max_user_instances=1024
+echo 'fs.inotify.max_user_instances=1024' | sudo tee /etc/sysctl.d/99-inotify.conf
+```
+
+Escape hatch: nothing inside the image can work around the limit.
+`tests/integration.sh` ("the container the installer creates actually runs")
+detects the error string and prints this diagnosis instead of blaming the image.
+
+### Distrobox and toolbox
+
+The image is not a distrobox or toolbox image, and the project does not target
+them: `install.sh` is the entry point and `tests/integration.sh` is the contract
+for "the container runs". `distrobox create --image
+ghcr.io/wraindrock/agent-workspace:latest --init` does start this image, but
+`--init` boots systemd inside it, so it lands in the host inotify limit above
+(the container exits 255 while the systemd boot fails).

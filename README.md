@@ -256,7 +256,7 @@ git clone https://github.com/wraindrock/agent-workspace
 cd agent-workspace
 just check     # repository lint, no podman required
 just build     # build the image with podman
-just verify    # build + container self test
+just verify    # build + container self test + real-container integration test
 ~~~
 
 Requirements: `podman` (or `docker`) and `just`, plus `bash` 4.4+ for `install.sh`.
@@ -264,7 +264,10 @@ The lint uses `shellcheck`, `actionlint`, `just` and `python3` + `pyyaml` when t
 are present and skips them when they are not; `tests/smoke.sh` separately needs `jq`.
 CI installs `actionlint` and `just` explicitly, and relies on the runner image for
 `shellcheck`, `jq` and `python3`. Every pull request runs the same `tests/lint.sh`,
-`tests/install.sh` and `tests/smoke.sh`, so nothing is "only tested on my machine".
+`tests/install.sh`, `tests/smoke.sh` and `tests/integration.sh` - the last one
+creates a real container through `install.sh` and needs a host where rootless
+podman can boot systemd (see [docs/containers.md](docs/containers.md#troubleshooting)),
+so nothing is "only tested on my machine".
 
 ## Repository layout
 
@@ -314,6 +317,15 @@ shows up in `journalctl` instead of in a broken agent session.
   rootless podman or docker; that is the whole point, and it is also the boundary.
 - `docker` needs `--privileged --cgroupns=host` for the image's systemd to be PID 1.
   The installer adds those flags for you; prefer `podman` when you have the choice.
+- Booting systemd in a container needs host kernel headroom. The kernel charges
+  inotify instances per *user* (`fs.inotify.max_user_instances`, 128 by default),
+  a desktop session spends most of that budget, and once it is gone the container
+  exits with `Failed to allocate manager object: Too many open files`. Raise the
+  limit - [docs/containers.md](docs/containers.md#troubleshooting) has the exact
+  commands and how to tell this apart from a container that dies for another reason.
+- Distrobox and toolbox are not targets: `install.sh` is the entry point, and
+  `tests/integration.sh` is the contract for "the container runs". The same
+  troubleshooting section says what `distrobox create --init` runs into.
 
 ## Contributing
 
