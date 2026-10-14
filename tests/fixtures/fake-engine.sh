@@ -227,7 +227,9 @@ case "$cmd" in
     [[ -n "$name" ]] || { printf 'fake run without --name\n' >&2; exit 1; }
     dir="$(container_dir "$name")"
     mkdir -p "$dir"
-    printf 'running\n' >"${dir}/state"
+    # FAKE_ENGINE_RUN_STATE lets a test simulate a container that exits as soon
+    # as it starts, so the installer's liveness check can be asserted.
+    printf '%s\n' "${FAKE_ENGINE_RUN_STATE:-running}" >"${dir}/state"
     printf '%s\n' "${image:-unknown}" >"${dir}/image"
     # remember the credentials the container was started with
     if [[ -n "${env_file:-}" && -f "$env_file" ]]; then cp "$env_file" "${dir}/env"; fi

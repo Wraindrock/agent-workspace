@@ -104,6 +104,18 @@ run_installer() { # run_installer PATH [args...]
 }
 run() { run_installer "$PATH" "$@"; }
 
+# run_dead_engine runs the installer once against an engine whose container exits
+# the moment it starts, so the liveness check can be asserted.
+run_dead_engine() {
+  RUN_OUT="$(env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" \
+    FAKE_ENGINE_RUN_STATE=stopped CONTAINER_READY_TIMEOUT=0 \
+    bash "$INSTALLER" "$@" 2>&1 </dev/null)"
+  RUN_STATUS=$?
+}
+
 # --- host paths ------------------------------------------------------------
 
 data() { printf '%s/agent-workspace' "$XDG_DATA_HOME"; }
@@ -585,6 +597,17 @@ contains "--help-agents lists the built-in agents" "dsh" "$RUN_OUT"
 run_installer "$BIN_NOSH" create --agent dsh --name engineless --yes
 is "creating without an engine fails" 1 "$RUN_STATUS"
 contains "the missing engine is reported when there is none" "neither podman nor docker" "$RUN_OUT"
+
+# =========================================================================
+echo "create (container that does not stay up)"
+# A container that exits on start used to be reported as created, which is how a
+# dangling /home and an image without systemd as its command reached a release.
+# The installer now waits for the container to run and fails loudly when it does
+# not.
+run_dead_engine create --agent dsh --name dead1 --yes
+is "create fails when the container does not stay up" 1 "$RUN_STATUS"
+contains "the failure says the container did not stay up" "did not stay up" "$RUN_OUT"
+contains "the failure points at the troubleshooting section" "docs/containers.md#troubleshooting" "$RUN_OUT"
 
 # =========================================================================
 echo

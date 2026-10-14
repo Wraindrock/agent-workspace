@@ -116,11 +116,20 @@ create_container_from() {
       args+=("$image_ref")
       run_engine "${args[@]}"
       if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
-        sleep 2
-        if ! eng_container_running "$name"; then
-          warn "container ${name} did not stay up; recent log lines:"
-          "$ENGINE_BIN" logs --tail 20 "$name" 2>/dev/null || true
-        fi
+        # Wait for the container to reach "running" instead of trusting that it
+        # did: a container that exits on start (a dangling /home, an image whose
+        # command is not systemd) used to be reported as created. The wait is a
+        # liveness probe, not a fixed sleep, and it is bounded.
+        local waited=0 timeout="${CONTAINER_READY_TIMEOUT:-30}"
+        until eng_container_running "$name"; do
+          if [[ "${waited}" -ge "${timeout}" ]]; then
+            warn "container ${name} did not stay up; recent log lines:"
+            "$ENGINE_BIN" logs --tail 20 "$name" 2>/dev/null || true
+            die "container ${name} is not running (docs/containers.md#troubleshooting explains host limits)"
+          fi
+          sleep 1
+          waited=$((waited + 1))
+        done
       fi
       ;;
     ephemeral)
