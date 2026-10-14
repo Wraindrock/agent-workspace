@@ -8,6 +8,36 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 `agent-workspace` CLI. Day-to-day image builds are identified by tag
 (`YYYYMMDD`, `YYYYMMDD-<sha>`) rather than by version number.
 
+## [0.1.1] - 2026-10-14
+
+The container `install.sh` creates now actually boots. Both fixes live in the
+image, so a new container - or `install.sh upgrade` - picks them up.
+
+### Fixed
+
+- The image names systemd as its own command (`CMD ["/sbin/init"]`). `podman run
+  --systemd=always` does not replace a container's command (checked against
+  podman 5.8.4), so every container inherited the base image's `/usr/bin/bash`,
+  exited within milliseconds, and `install.sh create` reported a container that
+  never ran.
+- `00-preflight` materialises `/var/home` for the dangling `/home` symlink,
+  which is what made `install.sh create` fail outright with `crun: creating
+  '/home/agent': openat2 'home': No such file or directory`: the engine has to
+  create the agent home volume's mount point inside the container.
+  `verify_layout` and `tests/smoke.sh` now cover `/home` as well.
+- `install.sh create` waits for the container to reach `running` (a bounded
+  liveness probe, not a fixed sleep) and fails with the container's own log lines
+  when it does not, instead of reporting a container that never started.
+  `tests/install.sh` covers that path with an engine whose container exits on
+  start.
+
+### Added
+
+- `tests/integration.sh`: boots the image through `install.sh` on the real
+  engine and asserts that the container runs, that PID 1 is systemd and that
+  `/home/agent` is a mounted volume. CI ran no real container before this, and
+  `just verify` now runs it too.
+
 ## [0.1.0] - 2026-10-13
 
 The first release: a declarative Fedora bootc image plus the installer that runs
@@ -138,4 +168,5 @@ it as isolated agent containers.
   module and agent recipe contracts, which user the container runs the agent as,
   and the snapshot guarantees that `doctor` checks.
 
+[0.1.1]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wraindrock/agent-workspace/releases/tag/v0.1.0
