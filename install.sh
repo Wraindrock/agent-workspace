@@ -18,7 +18,19 @@ if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]] || { [[ "${BASH_VERSINFO[0]}" -eq 4 ]] &
   exit 1
 fi
 
-INSTALLER_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Where the library files live. Under `curl ... | bash` there is no file on disk
+# and therefore no `${BASH_SOURCE[0]}`: reading it directly aborts the whole
+# script on line 21 under `set -u`, which is how the documented install command
+# first failed. When there is no script path the bootstrap below has to fetch the
+# libraries, so point INSTALLER_HOME at a path that cannot be mistaken for a
+# checkout - `bootstrap_is_checkout` tests every file under it, and using the
+# current directory would let a stray `installer/` tree in $PWD silently satisfy
+# it and then source files this run never verified.
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+INSTALLER_HOME=""
+if [[ -n "$SCRIPT_PATH" ]]; then
+  INSTALLER_HOME="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+fi
 
 # ---------------------------------------------------------------------------
 # Bootstrap: run from anywhere.
@@ -46,7 +58,7 @@ INSTALLER_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 INSTALL_REF_DEFAULT="main"
 INSTALL_REF="${AW_INSTALL_REF:-$INSTALL_REF_DEFAULT}"
-INSTALL_REPO="${AW_INSTALL_REPO:-Wraindrock/agent-workspace}"
+INSTALL_REPO="${AW_INSTALL_REPO:-wraindrock/agent-workspace}"
 INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INSTALL_REPO}}"
 
 # sha256 of every file the bootstrap fetches, for ref `main` and ref `dev`.
@@ -824,6 +836,28 @@ main() {
 
   if [[ "${#ARGS[@]}" -eq 0 ]]; then
     if ! ui_enabled; then
+      # The documented one-liner is `curl ... | bash` with no arguments, but that
+      # form cannot run the TUI: stdin is the script itself, so there is nothing
+      # left to read keystrokes from. Printing the whole usage here buried the one
+      # fact the user needs (nothing was changed - the install never started).
+      # Name the exact commands that do work instead.
+      #
+      # The test is "this script arrived on stdin", not "stdin is not a tty":
+      # `bash install.sh < /dev/null` is also a non-tty run, but there the usage
+      # is the right answer, and the empty BASH_SOURCE is what distinguishes them.
+      if [[ -z "${SCRIPT_PATH:-}" ]]; then
+        printf 'install.sh: nothing was changed - this ran non-interactively, so the\n' >&2
+        printf 'interactive TUI could not start (stdin is the piped script).\n\n' >&2
+        printf 'Run it with a terminal, or pass a subcommand through the pipe:\n\n' >&2
+        printf '  curl -fsSL %s/%s/install.sh | bash -s -- create --name dsh-box\n' \
+          "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
+        printf '  curl -fsSL %s/%s/install.sh | bash -s -- --help\n\n' \
+          "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
+        printf 'Or save it first and run it with a terminal:\n\n' >&2
+        printf '  curl -fsSL %s/%s/install.sh -o install.sh && bash install.sh\n' \
+          "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
+        return 1
+      fi
       usage
       return 1
     fi

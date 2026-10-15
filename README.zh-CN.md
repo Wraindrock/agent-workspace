@@ -17,12 +17,21 @@
 ## 快速开始
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh -o install.sh
+bash install.sh
 ~~~
 
 安装就这一条命令。`install.sh` 是单独一个脚本：它会自己拉取所需的库，并逐个用
 脚本内置的摘要校验，所以不需要 clone，也不会在本地留下一份需要同步的代码。拉取到
 的文件缓存在 `~/.cache/agent-workspace/bootstrap/`。
+
+TUI 需要终端，所以交互安装请把脚本留在本地。只想用子命令的话，直接管道接 bash
+即可 —— `-s --` 负责把参数透传过去：
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh \
+  | bash -s -- list
+~~~
 
 TUI 会依次问你：容器里装哪个 agent、容器叫什么名字、生命周期选 **persistent**
 （systemd 常驻，home 卷跨重启保留）还是 **ephemeral**（跑完即弃）、把主机上哪个
@@ -42,7 +51,7 @@ iw --help            # 所有子命令，含非交互用法
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/dev/install.sh \
-  | AW_INSTALL_REF=dev bash
+    | AW_INSTALL_REF=dev bash -s -- --help
 ~~~
 
 脚本与 `AW_INSTALL_REF` 要用同一个 ref。每个分支的 `install.sh` 只带自己分支的摘要，

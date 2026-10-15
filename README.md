@@ -23,13 +23,22 @@ ghcr.io/wraindrock/agent-workspace:latest
 ## Quick start
 
 ~~~bash
-curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh -o install.sh
+bash install.sh
 ~~~
 
 That is the whole install. `install.sh` is one script: it fetches the libraries it needs
 and checks each against a digest carried inside itself, so there is nothing to clone and
 nothing left behind to keep in sync. The fetched files land in
 `~/.cache/agent-workspace/bootstrap/`.
+
+The TUI needs a terminal, so keep the script on disk for it. To drive subcommands instead,
+pipe straight into bash - `-s --` passes the arguments through:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh \
+  | bash -s -- list
+~~~
 
 The TUI asks which agent goes into the container, what to call it, whether it should be
 **persistent** (systemd, keeps its home volume across restarts) or **ephemeral** (run
@@ -50,7 +59,7 @@ script verifies whichever you pick the same way:
 
 ~~~bash
 curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/dev/install.sh \
-  | AW_INSTALL_REF=dev bash
+    | AW_INSTALL_REF=dev bash -s -- --help
 ~~~
 
 Use the same ref for the script and for `AW_INSTALL_REF`. Each branch's `install.sh`

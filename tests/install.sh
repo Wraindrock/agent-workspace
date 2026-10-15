@@ -104,6 +104,23 @@ run_installer() { # run_installer PATH [args...]
 }
 run() { run_installer "$PATH" "$@"; }
 
+# run_piped feeds install.sh to bash on stdin, the way `curl ... | bash -s --`
+# does. Every other helper here passes the script as a *file*, which is why the
+# documented install command shipped broken: with the script on stdin there is no
+# BASH_SOURCE, and reading it under `set -u` aborted the run before it started.
+# A checkout has the libraries beside it, so the bootstrap finds them and the test
+# stays offline.
+run_piped_installer() { # run_piped_installer PATH [args...]
+  local path="$1"; shift
+  RUN_OUT="$(env PATH="$path" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" \
+    bash -s -- "$@" <"$INSTALLER" 2>&1)"
+  RUN_STATUS=$?
+}
+run_piped() { run_piped_installer "$PATH" "$@"; }
+
 # run_dead_engine runs the installer once against an engine whose container exits
 # the moment it starts, so the liveness check can be asserted.
 run_dead_engine() {
@@ -160,6 +177,35 @@ contains "the unknown option is reported" "unknown option" "$RUN_OUT"
 run
 is "no command without a tty prints usage" 1 "$RUN_STATUS"
 contains "the usage is printed" "agent-workspace installer" "$RUN_OUT"
+
+# --- the script on stdin: `curl ... | bash -s -- ...` ----------------------
+# These are the cases that only exist when install.sh arrives on stdin instead of
+# as a file. They are what the documented command actually does.
+run_piped --version
+is "a piped install runs instead of aborting" 0 "$RUN_STATUS"
+contains "the piped install reports a version" "agent-workspace installer" "$RUN_OUT"
+if [[ "$RUN_OUT" == *"unbound variable"* ]]; then
+  fail "the piped install died on an unbound variable (BASH_SOURCE has no value when the script is on stdin)"
+else
+  pass "the piped install does not read BASH_SOURCE unguarded"
+fi
+
+run_piped --help
+is "a piped --help exits 0" 0 "$RUN_STATUS"
+contains "the piped help lists subcommands" "create" "$RUN_OUT"
+
+# With no arguments a piped run cannot start the TUI (stdin is the script), so it
+# must say that plainly and name a command that works - not silently do nothing,
+# and not bury the explanation under the whole usage text.
+run_piped
+is "a piped run with no arguments fails loudly" 1 "$RUN_STATUS"
+contains "the piped no-argument run says nothing was changed" "nothing was changed" "$RUN_OUT"
+contains "the piped no-argument run names a working command" "bash -s --" "$RUN_OUT"
+if [[ "$RUN_OUT" == *"BASH_SOURCE"* ]]; then
+  fail "the piped no-argument run leaked an internal error instead of explaining the pipe"
+else
+  pass "the piped no-argument run explains itself without an internal error"
+fi
 
 run remove
 is "remove without a name fails" 1 "$RUN_STATUS"
