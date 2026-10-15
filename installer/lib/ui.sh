@@ -34,7 +34,11 @@ ui_read() {
     [[ -n "$__prompt" ]] && printf '%s' "$__prompt" >&"$UI_TTY_FD"
     IFS= read -r -u "$UI_TTY_FD" __line || return 1
   else
-    [[ -n "$__prompt" ]] && printf '%s' "$__prompt"
+    # The prompt goes to stderr, never stdout. Callers capture stdout to get the
+    # answer (`name="$(ui_input ...)"`), so a prompt printed there is read back as
+    # part of the value: a name of "Name [dsh-box]: dsh-box" fails validation, and
+    # a secret would be written to disk with its own prompt glued to the front.
+    [[ -n "$__prompt" ]] && printf '%s' "$__prompt" >&2
     IFS= read -r __line || return 1
   fi
   printf -v "$__var" '%s' "$__line"
@@ -231,12 +235,13 @@ ui_secret() {
     stty echo <&"$UI_TTY_FD" 2>/dev/null || true
     printf '\n' >&"$UI_TTY_FD"
   else
-    printf '%s: ' "$header"
+    # stderr, for the same reason as ui_read: the caller captures stdout.
+    printf '%s: ' "$header" >&2
     if ! IFS= read -rs answer; then
-      printf '\n'
+      printf '\n' >&2
       return 1
     fi
-    printf '\n'
+    printf '\n' >&2
   fi
   printf '%s' "$answer"
 }

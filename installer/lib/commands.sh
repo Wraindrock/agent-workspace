@@ -46,18 +46,75 @@ state_engine_soft() {
   fi
 }
 
+# ensure_image REF: make REF ready to create from, refreshing a tag that moved.
+#
+# "The image is here" is not "the image is current". A digest cannot change, so a
+# local copy of one is already the right answer. A tag can: `latest` is whatever
+# the registry serves *now*, and a local copy of it can be days old. Treating
+# presence as freshness is how a user ends up running code from before the fix
+# they are waiting for - one host ran a three-day-old image whose dangling /home
+# symlink made the engine die with `crun: creating '/home/agent': openat2 'home':
+# No such file or directory`, an error that reads like an engine bug and was not
+# one. So refresh tags, and keep --no-pull as the explicit "use whatever is here"
+# escape for a machine with no network.
 ensure_image() {
   local ref="${1}"
-  eng_image_exists "$ref" && return 0
+  # A locally built image (snapshots, dev builds) has no registry to ask, and a
+  # digest cannot have moved: for both of them presence is the whole test.
+  if [[ "$ref" == *"@sha256:"* ]] || [[ "$ref" == localhost/* ]]; then
+    eng_image_exists "$ref" && return 0
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+      run_engine pull "$ref"
+      return 0
+    fi
+    [[ "${NO_PULL:-0}" -eq 1 ]] && die_k err_image_missing "${ref}"
+    pull_or_die "$ref"
+    return 0
+  fi
   if [[ "${NO_PULL:-0}" -eq 1 ]]; then
-    die_k err_image_missing "${ref}"
+    eng_image_exists "$ref" || die_k err_image_missing "${ref}"
+    return 0
   fi
-  msg_k pulling "${ref}"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    # A dry run does not touch the registry, but it does say what a real run does.
+    run_engine pull "$ref"
+    return 0
+  fi
+  refresh_image "$ref"
+}
+
+pull_image() {
   if [[ -n "${GUM_BIN:-}" ]]; then
-    ui_spin "$(tf pulling "${ref}")" "$ENGINE_BIN" pull "$ref" || die_k err_pull_failed "${ref}"
+    ui_spin "$(tf pulling "${1}")" "$ENGINE_BIN" pull "$1"
   else
-    "$ENGINE_BIN" pull "$ref" || die_k err_pull_failed "${ref}"
+    "$ENGINE_BIN" pull "$1"
   fi
+}
+
+# pull_or_die REF: pull, with nothing to fall back on.
+pull_or_die() {
+  local ref="${1}"
+  msg_k pulling "${ref}"
+  pull_image "$ref" || die_k err_pull_failed "${ref}"
+}
+
+# refresh_image REF: pull REF, but never lose a usable local copy to a registry
+# that is merely unreachable. Either way it names the copy about to be used, with
+# its id - and its build time when falling back - because silently running a stale
+# image is the bug this exists to prevent.
+refresh_image() {
+  local ref="${1}" existed=0
+  eng_image_exists "$ref" && existed=1
+  msg_k pulling "${ref}"
+  if pull_image "$ref"; then
+    ok_k image_refreshed "${ref}" "$(eng_image_id "$ref")"
+    return 0
+  fi
+  if [[ "$existed" -eq 1 ]]; then
+    warn_k warn_pull_failed "${ref}" "$(eng_image_id "$ref")" "$(eng_image_created "$ref")"
+    return 0
+  fi
+  die_k err_pull_failed "${ref}"
 }
 
 confirm() {

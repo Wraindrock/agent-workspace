@@ -701,6 +701,40 @@ else
   fail "agent-workspace doctor --help is treated as an unknown command"
 fi
 
+# --- 9. the prompt surface ---------------------------------------------------
+echo "the prompt surface"
+
+# Every call site takes a prompt's answer through a command substitution
+# (`name="$(ui_input ...)"`, `value="$(ui_secret ...)"`), so whatever a prompt
+# prints on *stdout* is read back as part of the value. With the prompt on stdout,
+# ui_input returned "Name [dsh-box]: dsh-box" - a name that then fails validation -
+# and ui_secret returned its own prompt with the key glued behind it, which is what
+# would have been written to the 0600 credential file. Both prompts belong on
+# stderr. The branch asserted here is the no-extra-terminal one (no gum, no
+# UI_TTY_FD); the fd-backed branch writes to the terminal descriptor instead.
+prompt_probe() { # prompt_probe FUNCTION HEADER INPUT
+  bash -c '
+    source installer/lib/i18n.sh
+    source installer/lib/ui.sh
+    NO_TUI=0 GUM_BIN="" UI_TTY_FD=""
+    "$1" "$2" <<<"$3" 2>/dev/null
+  ' _ "$1" "$2" "$3"
+}
+
+got="$(prompt_probe ui_input "Name [dsh-box]" "dsh-box" || true)"
+if [[ "${got}" == "dsh-box" ]]; then
+  pass "ui_input returns the answer alone, with its prompt on stderr"
+else
+  fail "ui_input returned [${got}]: its prompt is on stdout and the caller captures it"
+fi
+
+got="$(prompt_probe ui_secret "DEEPSEEK_API_KEY (enter to skip)" "sk-not-a-real-key" || true)"
+if [[ "${got}" == "sk-not-a-real-key" ]]; then
+  pass "ui_secret returns the secret alone, with its prompt on stderr"
+else
+  fail "ui_secret returned [${got}]: its prompt would be written into the credential file"
+fi
+
 echo
 if [[ "${failures}" -eq 0 ]]; then
   printf 'contract: all checks passed (%d assertions)\n' "${assertions}"

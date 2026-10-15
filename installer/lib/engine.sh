@@ -82,6 +82,12 @@ eng_container_image() {
 eng_volume_exists() { "$ENGINE_BIN" volume inspect "$1" >/dev/null 2>&1; }
 eng_image_exists()  { "$ENGINE_BIN" image inspect "$1" >/dev/null 2>&1; }
 
+# Which local copy is about to be used, and when it was built. Display-only
+# read-only queries: a missing image must not abort the caller (these run under
+# `set -e`), so a failure degrades to an empty string instead of an exit status.
+eng_image_id()      { "$ENGINE_BIN" image inspect --format '{{.Id}}' "$1" 2>/dev/null | sed 's/^sha256://' | cut -c1-12 || true; }
+eng_image_created() { "$ENGINE_BIN" image inspect --format '{{.Created}}' "$1" 2>/dev/null | sed 's/\.[0-9]\{1,\} / /' || true; }
+
 eng_labeled_containers() {
   "$ENGINE_BIN" ps --all --filter "label=${LABEL_KEY}=${LABEL_VALUE}" --format '{{.Names}}' 2>/dev/null || true
 }

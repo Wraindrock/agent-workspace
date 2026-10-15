@@ -26,6 +26,38 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Fixed
 
+- The installer no longer runs a stale image because the tag was already present
+  locally. `ensure_image` treated "the image exists" as "the image is current", so a
+  host that had pulled `ghcr.io/wraindrock/agent-workspace:latest` days earlier kept
+  creating containers from that copy - and a host that had pulled one from before the
+  `/home` symlink was materialised got
+  `crun: creating '/home/agent': openat2 'home': No such file or directory` on every
+  create, an error that reads like an engine bug. A tag is now refreshed before use,
+  a digest and a `localhost/` build (which have nothing to refresh from and cannot
+  move) are still trusted, and `--no-pull` keeps meaning "use whatever is here". When
+  the registry cannot be reached, an existing local copy is still used - but the
+  installer names the copy and the day it was built instead of switching to it
+  silently. `tests/install.sh` asserts the pull happens, that `--no-pull` skips it,
+  and that an unreachable registry falls back with that warning. `tests/fixtures/fake-engine.sh`
+  answers `image inspect --format` and can simulate an unreachable registry.
+
+- A prompt printed on `stdout` was captured as part of the answer. `ui_read` and
+  `ui_secret` write the prompt to the terminal descriptor when there is one, but the
+  fallback path printed it on `stdout` - and every call site reads the answer through
+  a command substitution. Without a reattached terminal the container name came back
+  as `Name [dsh-box]: dsh-box` (which then failed validation), and a typed secret came
+  back as its own prompt with the key glued behind it, which is exactly what would
+  have been written to the 0600 credential file. Both prompts now go to `stderr`;
+  `tests/contract.sh` asserts the answer is returned alone.
+
+- A container created without credentials said so too quietly, in a line that also
+  appeared for agents that need no credentials at all. When the agent has a required
+  key and none was collected after asking, the installer now says that the container
+  is created but its agent has nothing to call a model with, names the missing key and
+  gives the file to add it to. When there was no terminal at all, the existing
+  "skipping <KEY>" line is the explanation and is not repeated in other words.
+  `tests/install.sh` asserts both cases.
+
 - A snapshot taken in the same second as a deleted one could be handed an id that
   sorted *before* a snapshot that still existed, because ids are second-granular
   and the collision loop only skipped ids that were currently taken - deleting a

@@ -164,6 +164,18 @@ run_dead_engine() {
   RUN_STATUS=$?
 }
 
+# run_no_key runs the installer with no API key in the environment and no
+# terminal, so the credential question cannot be asked at all: whatever it creates
+# is a container whose agent has nothing to call a model with.
+run_no_key() {
+  RUN_OUT="$(env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" \
+    bash "$INSTALLER" "$@" 2>&1 </dev/null)"
+  RUN_STATUS=$?
+}
+
 # --- host paths ------------------------------------------------------------
 
 data() { printf '%s/agent-workspace' "$XDG_DATA_HOME"; }
@@ -241,6 +253,54 @@ fi
 run remove
 is "remove without a name fails" 1 "$RUN_STATUS"
 contains "remove without a name explains itself" "needs a container name" "$RUN_OUT"
+
+# =========================================================================
+# A tag is not a fixed point: `latest` is whatever the registry serves *now*, and
+# a local copy of it can be days old. Treating "the image is present" as "the image
+# is current" is how a real host created a container from a three-day-old image
+# whose dangling /home symlink made the engine die with
+# `crun: creating '/home/agent': openat2 'home': No such file or directory` - an
+# error that reads like an engine bug and was not one.
+echo "image freshness"
+DEFAULT_IMAGE="ghcr.io/wraindrock/agent-workspace:latest"
+IMAGE_MARKER="$FAKE_ENGINE_STATE/images/$(printf '%s' "$DEFAULT_IMAGE" | tr '/:' '__')"
+: >"$IMAGE_MARKER"          # a copy is already here, as after an earlier install
+: >"$FAKE_ENGINE_STATE/log" # an empty log makes the next two assertions exact
+run create --agent dsh --name fresh1 --yes
+is "creating from a tag succeeds" 0 "$RUN_STATUS"
+contains "a tag is refreshed before it is used" "podman pull $DEFAULT_IMAGE" "$(engine_log)"
+contains "the refreshed copy is named" "refreshed image $DEFAULT_IMAGE" "$RUN_OUT"
+
+: >"$FAKE_ENGINE_STATE/log"
+run create --agent dsh --name fresh2 --yes --no-pull
+is "create --no-pull uses the local copy" 0 "$RUN_STATUS"
+lacks "--no-pull leaves the registry alone" "podman pull" "$(engine_log)"
+
+# A registry can be unreachable. The local copy must still be usable, and the user
+# has to be told which copy that is: an old image nobody mentions is the bug.
+export FAKE_ENGINE_PULL_FAILS=1
+run create --agent dsh --name fresh3 --yes
+unset FAKE_ENGINE_PULL_FAILS
+is "an unreachable registry still creates from the local copy" 0 "$RUN_STATUS"
+contains "the fallback says it is using the local copy" "using the local copy" "$RUN_OUT"
+contains "the fallback says when that copy was built" "built 2026-01-02" "$RUN_OUT"
+
+run create --agent dsh --name fresh5 --image ghcr.io/wraindrock/agent-workspace:nope --no-pull --yes
+is "a tag that is not here cannot silently succeed" 1 "$RUN_STATUS"
+contains "the missing image is named" "ghcr.io/wraindrock/agent-workspace:nope" "$RUN_OUT"
+
+# =========================================================================
+# A container with no credentials starts fine and cannot do anything. The key
+# question cannot even be asked without a terminal, and that case has to say which
+# key was skipped and where it goes - once, not twice in two different wordings.
+echo "credentials"
+run_no_key create --agent dsh --name nokey --yes
+is "creating without a key still succeeds" 0 "$RUN_STATUS"
+contains "the skipped key is named" "skipping DEEPSEEK_API_KEY" "$RUN_OUT"
+contains "the skipped key is given a home" "add it later to" "$RUN_OUT"
+lacks "the missing key is not explained twice" "cannot reach a model" "$RUN_OUT"
+missing "no credential file is written when there are no credentials" "$(env_path nokey)"
+is "the container without a key is running" running "$(fake_state nokey)"
 
 # =========================================================================
 echo "create (persistent)"

@@ -123,7 +123,26 @@ case "$cmd" in
     ;;
   image)
     case "${1:-}" in
-      inspect) has_image "${2:-}" && { printf '{}\n'; exit 0; }; printf 'no such image\n' >&2; exit 1 ;;
+      inspect)
+        # eng_image_id/eng_image_created ask with --format; the plain form is the
+        # presence probe. Answer both, deterministically, so a test can assert
+        # which copy the installer decided it was about to use.
+        fmt=""; name=""
+        shift
+        while [[ "$#" -gt 0 ]]; do
+          case "$1" in
+            --format) fmt="$2"; shift 2 ;;
+            *) name="$1"; shift ;;
+          esac
+        done
+        has_image "$name" || { printf 'no such image\n' >&2; exit 1; }
+        case "$fmt" in
+          *Id*)      printf 'sha256:%s\n' "$(sanitise "$name" | cut -c1-12)" ;;
+          *Created*) printf '2026-01-02 03:04:05 +0000 UTC\n' ;;
+          *) printf '{}\n' ;;
+        esac
+        exit 0
+        ;;
       *) exit 0 ;;
     esac
     ;;
@@ -131,6 +150,12 @@ case "$cmd" in
     ref="${1:-}"
     tag=latest
     case "$ref" in *:*) tag="${ref##*:}" ;; esac
+    # FAKE_ENGINE_PULL_FAILS simulates an unreachable registry, so the "keep the
+    # local copy, and say which copy it is" path can be asserted.
+    if [[ "${FAKE_ENGINE_PULL_FAILS:-0}" == "1" ]]; then
+      printf 'Error: unable to connect to the registry\n' >&2
+      exit 125
+    fi
     : >"$(image_file "$ref")"
     printf 'pulled %s (tag %s)\n' "$ref" "$tag"
     exit 0

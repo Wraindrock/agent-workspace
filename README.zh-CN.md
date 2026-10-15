@@ -36,7 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/ins
 TUI 会依次问你：容器里装哪个 agent、容器叫什么名字、生命周期选 **persistent**
 （systemd 常驻，home 卷跨重启保留）还是 **ephemeral**（跑完即弃）、把主机上哪个
 目录挂载到 `/workspace`，以及那个 agent 需要的凭据。之后它创建好容器，并告诉你
-怎么进去。
+怎么进去。凭据会写进 `~/.config/agent-workspace/containers/` 下权限 `0600` 的文件，
+再以 `--env-file` 交给容器，绝不进镜像；如果你跳过这一步，容器照样会创建，但安装器
+会明确告诉你：在把密钥补进去之前，它的 agent 没有可用的模型。
+
+正式创建之前，安装器会先确认镜像就是仓库现在给的那个——像 `latest` 这种 tag，本地
+副本可能是几天前的，用它建出来的容器会以看起来像引擎 bug 的方式失败。digest 和本地
+自建的镜像（`localhost/...`）没有可刷新的来源，按原样使用；`--no-pull` 则完全不问
+仓库，直接用本地副本。
 
 本地没有 checkout 时，子命令也用同一条管道调用：
 

@@ -174,8 +174,8 @@ Every TUI action has a subcommand:
 ```
 
 Global options: `--engine auto|podman|docker`, `--image REF`, `--no-tui`,
-`--dry-run` (print the engine commands instead of running them), `--no-pull`,
-`--yes`, `--quiet`.
+`--dry-run` (print the engine commands instead of running them), `--no-pull`
+(use the local copy without refreshing its tag), `--yes`, `--quiet`.
 
 ## Declarative containers
 

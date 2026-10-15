@@ -44,6 +44,17 @@ The TUI asks which agent goes into the container, what to call it, whether it sh
 **persistent** (systemd, keeps its home volume across restarts) or **ephemeral** (run
 once, then gone), which host directory to mount at `/workspace`, and once for the
 credential that agent needs. Then it creates the container and tells you how to enter it.
+That credential is written to a `0600` file under
+`~/.config/agent-workspace/containers/` and passed to the container as an `--env-file`,
+so it is never baked into the image; if you skip the question the container is still
+created, and the installer says plainly that its agent has nothing to call a model with
+until you add the key there.
+
+Before anything is created the installer checks that the image is the one the registry
+serves *now* - a local copy of a tag like `latest` can be days old, and a container
+created from a stale one fails in ways that look like engine bugs. Digests and images you
+built locally (`localhost/...`) have nothing to refresh from and are used as they are;
+`--no-pull` keeps a local copy without asking the registry at all.
 
 With no checkout on disk, run the subcommands through the same pipe:
 

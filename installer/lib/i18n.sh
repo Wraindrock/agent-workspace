@@ -146,6 +146,8 @@ t() {
         pipe_or_save)         value="也可以先存下来再用终端运行：" ;;
         # --- container lifecycle ------------------------------------------
         pulling)              value="正在拉取 %s" ;;
+        image_refreshed)      value="镜像已刷新：%s（%s）" ;;
+        warn_pull_failed)     value="无法刷新 %s（仓库不可达）；改用本地已有的 %s，构建于 %s" ;;
         no_containers_yet)    value="还没有容器；用这条命令创建：%s" ;;
         started)              value="已启动 %s" ;;
         stopped_name)         value="已停止 %s" ;;
@@ -170,7 +172,7 @@ t() {
         warn_no_engine_dry)   value="没有找到容器引擎；--dry-run 假定使用 podman" ;;
         engine_line)          value="引擎：%s（%s）" ;;
         # --- credentials ---------------------------------------------------
-        creds_none)           value="未为 %s 收集凭据；之后可以在 %s 里补上" ;;
+        creds_none)           value="未为 %s 收集凭据：容器仍会创建，但在补上 %s 之前它的智能体无法调用模型；之后可以加到 %s（权限 600）" ;;
         creds_written)        value="已把凭据写入 %s（权限 600）" ;;
         creds_from_env)       value="使用环境变量里的 %s" ;;
         creds_no_tty)         value="没有终端可用于提问：跳过 %s（之后可加到 %s）" ;;
@@ -359,6 +361,8 @@ t() {
         pipe_or_save)         value="Or save it first and run it with a terminal:" ;;
         # --- container lifecycle ------------------------------------------
         pulling)              value="pulling %s" ;;
+        image_refreshed)      value="refreshed image %s (%s)" ;;
+        warn_pull_failed)     value="could not refresh %s (registry unreachable); using the local copy %s, built %s" ;;
         no_containers_yet)    value="no containers yet; create one with: %s" ;;
         started)              value="started %s" ;;
         stopped_name)         value="stopped %s" ;;
@@ -383,7 +387,7 @@ t() {
         warn_no_engine_dry)   value="no container engine found; --dry-run assumes podman" ;;
         engine_line)          value="engine: %s (%s)" ;;
         # --- credentials ---------------------------------------------------
-        creds_none)           value="no credentials collected for %s; you can add them later in %s" ;;
+        creds_none)           value="no credentials collected for %s: the container is still created, but its agent cannot reach a model until %s is in place; add it later to %s (mode 600)" ;;
         creds_written)        value="wrote credentials to %s (mode 600)" ;;
         creds_from_env)       value="using %s from the environment" ;;
         creds_no_tty)         value="no terminal for prompts: skipping %s (add it later to %s)" ;;
@@ -579,7 +583,7 @@ create 选项
   --image REF                   要运行的镜像（默认：取自 image.env）
   --no-tui                      绝不启动 TUI；该提问时直接失败
   --dry-run, -n                 只打印引擎命令，不真正执行
-  --no-pull                     绝不拉取镜像
+  --no-pull                     不刷新镜像：直接用本地已有的副本
   --yes, -y                     所有确认都视为「是」
   --quiet, -q                   只打印警告和错误
   --strict                      doctor 专用：任何问题都以非零码退出
@@ -645,7 +649,7 @@ global options
   --image REF                   image to run (default: from image.env)
   --no-tui                      never start the TUI; fail instead of prompting
   --dry-run, -n                 print the engine commands instead of running
-  --no-pull                     never pull an image
+  --no-pull                     do not refresh the image; use the local copy
   --yes, -y                     assume yes for confirmations
   --quiet, -q                   only print warnings and errors
   --strict                      doctor only: exit non-zero on any problem

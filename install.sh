@@ -102,20 +102,20 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="c9af54c026be9e192828412579c6a6c35fe3cc8f56d4ae2f83ef4c6cc77e4747"
-  [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
-  [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
+  [installer/lib/commands.sh]="6643c40dd43816d0f1bc007e15d5aad90ae467df0893a1d24ba2827b433e8351"
+  [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
+  [installer/lib/i18n.sh]="a25c57a037524da06cecff29d00630c2c2bd8336919e51a4d37a7e0faeb263d3"
   [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
-  [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
+  [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="c9af54c026be9e192828412579c6a6c35fe3cc8f56d4ae2f83ef4c6cc77e4747"
-  [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
-  [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
+  [installer/lib/commands.sh]="6643c40dd43816d0f1bc007e15d5aad90ae467df0893a1d24ba2827b433e8351"
+  [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
+  [installer/lib/i18n.sh]="a25c57a037524da06cecff29d00630c2c2bd8336919e51a4d37a7e0faeb263d3"
   [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
-  [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
+  [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 BOOTSTRAP_FILES=(
   image.env
@@ -311,6 +311,10 @@ SPEC_AGENT=()
 SPEC_MODE=()
 SPEC_WORKSPACE=()
 declare -A SECRETS=()
+# Set when the credential question could not be asked at all (no terminal), so the
+# caller knows the missing key has already been explained and does not explain it
+# again in different words, as if it were a second problem.
+CREDS_EXPLAINED=0
 
 # Colour is decided by what the terminal can actually do, not by a fixed palette:
 # a real colour terminal gets 24-bit escapes, a 16-colour one gets the basic ones,
@@ -462,7 +466,8 @@ write_env_file() {
   path="$(env_file_for "$name")"
   dir="$(dirname "$path")"
   if [[ "${#}" -eq 0 ]]; then
-    msg_k creds_none "${name}" "${path}"
+    # Nothing to write. Whether that deserves a word is the caller's call: only
+    # create_specs knows which credentials this agent actually needs.
     return 0
   fi
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
@@ -489,6 +494,7 @@ collect_secret() {
       SECRETS["${key}"]="dry-run-placeholder"
     else
       msg_k creds_no_tty "${key}" "$(env_file_for "${agent}")"
+      CREDS_EXPLAINED=1
     fi
     return 0
   fi
@@ -574,8 +580,10 @@ create_specs() {
       install -d -m 0755 "$workspace" 2>/dev/null || true
     fi
     local -a envs=()
+    local -a needed=()
     local key
     for key in $(agent_envs_for "$agent"); do
+      needed+=("$key")
       [[ -n "${SECRETS[${key}]:-}" ]] && envs+=("${key}=${SECRETS[${key}]}")
     done
     if [[ "${#EXTRA_ENVS[@]}" -gt 0 ]]; then
@@ -583,6 +591,14 @@ create_specs() {
     fi
     if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
       write_env_file "$name" "${envs[@]}"
+      # A container with no credentials starts fine and cannot do anything: its
+      # agent has no model to talk to. Say so, and say what to do, when the user
+      # was asked and skipped - not as a passing note. With no terminal at all,
+      # collect_secret has already named the key and its file, and repeating that
+      # in other words reads like a second, different problem.
+      if [[ "${#envs[@]}" -eq 0 ]] && [[ "${#needed[@]}" -gt 0 ]] && [[ "${CREDS_EXPLAINED:-0}" -eq 0 ]]; then
+        msg_k creds_none "${name}" "${needed[0]}" "$(env_file_for "$name")"
+      fi
     fi
     create_container_from "$name" "$agent" "$mode" "$workspace" "$IMAGE"
     ok_k created_named "${name}" "${agent}" "${mode}"
