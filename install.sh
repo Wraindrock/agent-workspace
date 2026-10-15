@@ -102,19 +102,19 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="e193b3cfb95badb5ead977c37066cea6efb4198d0fb311dde5a6b6fd5b216949"
+  [installer/lib/commands.sh]="c9af54c026be9e192828412579c6a6c35fe3cc8f56d4ae2f83ef4c6cc77e4747"
   [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
   [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
-  [installer/lib/state.sh]="9e6399ad19c0d0655b044ac5e61ca3ad10a1f85c64d02f56974c5f4e3dc9303f"
+  [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
   [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="e193b3cfb95badb5ead977c37066cea6efb4198d0fb311dde5a6b6fd5b216949"
+  [installer/lib/commands.sh]="c9af54c026be9e192828412579c6a6c35fe3cc8f56d4ae2f83ef4c6cc77e4747"
   [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
   [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
-  [installer/lib/state.sh]="9e6399ad19c0d0655b044ac5e61ca3ad10a1f85c64d02f56974c5f4e3dc9303f"
+  [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
   [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
 )
 BOOTSTRAP_FILES=(

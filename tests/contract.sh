@@ -33,6 +33,12 @@
 #     - the catalogue `install.sh --help-agents` prints is exactly the enabled
 #       half of config/agents.conf, seen from the other side.
 #
+#   installer/lib/state.sh (snapshot ids)
+#     - the id every new snapshot takes sorts strictly after every id that already
+#       exists, with the clock frozen at each edge: a deleted id is free again, and
+#       a clock that stepped backwards. An id that merely happens to be unused let
+#       `--keep N` prune the snapshot it had just taken.
+#
 #   image.env and the agent-workspace CLI
 #     - the keys install.sh reads are asserted by behaviour, on a mutated copy
 #       of image.env: rename IMAGE_NAME and `install.sh --version` must print the
@@ -453,7 +459,63 @@ else
   fail "install.sh offers [$(printf '%s' "${menu_names}" | tr '\n' ' ')], config/agents.conf enables [$(printf '%s' "${enabled_agents}" | tr '\n' ' ')]"
 fi
 
-# --- 6. image.env -----------------------------------------------------------
+# --- 6. snapshot ids --------------------------------------------------------
+echo "snapshot ids"
+
+# Snapshot ids are second-granular and compared as strings, so the id a new
+# snapshot takes has to sort strictly after every id that exists - not merely be
+# unused. Deleting a snapshot frees its id, and a freed id can sit *below* one
+# that is still taken (`...Zb` free while `...Zbb` exists); taking it made
+# `--keep N` prune the snapshot it had just committed, and made `latest` and
+# `recover` resolve to an older one. The clock is frozen inside these probes by
+# defining a `date` function, so the collision is reproduced on demand instead of
+# being hoped for - on a real clock it needs two snapshots inside one second.
+snapshot_next_id_case() { # snapshot_next_id_case FROZEN_ID EXISTING_ID...
+  local frozen="$1" existing home
+  shift
+  home="$(mktemp -d)"
+  for existing in "$@"; do
+    mkdir -p "${home}/snapshots/demo/${existing}"
+    : >"${home}/snapshots/demo/${existing}/meta"
+  done
+  DATA_HOME="${home}" SNAPSHOT_FROZEN_ID="${frozen}" bash -c '
+    source installer/lib/state.sh
+    date() { printf "%s\n" "${SNAPSHOT_FROZEN_ID}"; }
+    snapshot_next_id demo
+  '
+  rm -rf "${home}"
+}
+
+if grep -qE '^snapshot_next_id\(\) \{' installer/lib/state.sh; then
+  pass "installer/lib/state.sh derives a snapshot id through snapshot_next_id()"
+else
+  fail "installer/lib/state.sh has no snapshot_next_id()"
+fi
+
+got="$(snapshot_next_id_case 20261016T000000Z 20261016T000000Zbb)"
+if [[ "${got}" > 20261016T000000Zbb ]]; then
+  pass "a snapshot taken while a lower id is free sorts after the newest one (${got})"
+else
+  fail "snapshot_next_id handed out ${got:-<empty>} beside the existing 20261016T000000Zbb, so --keep N would prune the snapshot it had just taken"
+fi
+
+# a clock that steps backwards must not produce an id that sorts older either
+got="$(snapshot_next_id_case 20261016T000000Z 20261016T000100Z)"
+if [[ "${got}" > 20261016T000100Z ]]; then
+  pass "a snapshot taken after the clock steps back still sorts newest (${got})"
+else
+  fail "snapshot_next_id handed out ${got:-<empty>} after the clock stepped back from 20261016T000100Z"
+fi
+
+# and cmd_snapshot takes its id from there rather than stamping the clock itself
+if grep -qE 'id="\$\(snapshot_next_id' installer/lib/commands.sh &&
+  ! grep -qE '%Y%m%dT%H%M%SZ' installer/lib/commands.sh; then
+  pass "cmd_snapshot takes its id from snapshot_next_id(), not from the clock"
+else
+  fail "cmd_snapshot still stamps its own snapshot id"
+fi
+
+# --- 7. image.env -----------------------------------------------------------
 echo "image.env"
 
 # The keys install.sh reads are asserted by behaviour, not by presence: a copy
@@ -536,7 +598,7 @@ for key in IMAGE_NAME REPO_ORGANIZATION IMAGE_DESC IMAGE_KEYWORDS IMAGE_LOGO_URL
     || fail "image.env no longer defines ${key}"
 done
 
-# --- 7. the agent-workspace CLI ---------------------------------------------
+# --- 8. the agent-workspace CLI ---------------------------------------------
 echo "runtime/bin/agent-workspace"
 
 # The CLI is not a host script: it sources /usr/lib/agent-workspace

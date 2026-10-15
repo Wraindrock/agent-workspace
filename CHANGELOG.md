@@ -26,6 +26,19 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Fixed
 
+- A snapshot taken in the same second as a deleted one could be handed an id that
+  sorted *before* a snapshot that still existed, because ids are second-granular
+  and the collision loop only skipped ids that were currently taken - deleting a
+  snapshot frees its id again. Two silent consequences: `--keep N` pruned the very
+  snapshot it had just committed, and `latest`, `recover` and `rollback --to latest`
+  resolved to an older snapshot. The id now grows off whichever id is currently
+  greatest whenever the raw timestamp would not sort after it, which also keeps ids
+  monotonic when the clock steps backwards. `cmd_snapshot` takes its id from the new
+  `snapshot_next_id()` instead of stamping the clock itself. `tests/contract.sh`
+  asserts the edge cases directly, and `tests/install.sh` pins them on a frozen
+  clock: a PATH whose `date` freezes the snapshot second, so "the newest snapshot is
+  the one just taken" is asserted without depending on how fast the suite runs.
+
 - A destructive subcommand no longer reports success when it was never confirmed.
   `remove`, `rollback` and `upgrade` read their confirmation from stdin; with no
   terminal that read hit EOF, `confirm` returned "no", and the caller returned 0 - so

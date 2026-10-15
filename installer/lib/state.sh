@@ -90,6 +90,29 @@ snapshot_latest() {
   snapshot_list "$1" | tail -n 1
 }
 
+# snapshot_next_id NAME prints the id a new snapshot should take.
+#
+# Ids are second-granular and ordered as strings, so "an id nobody is using" is
+# not enough: deleting a snapshot frees its id again, and the freed id can sort
+# *before* one that still exists (`...Zb` is free while `...Zbb` is taken). A new
+# snapshot has to sort strictly after everything that exists, or `--keep N`
+# prunes the very snapshot it just took, and `latest`/`recover` resolve to an
+# older one. The `b` suffix breaks ties inside a second by growing off whichever
+# id is currently greatest, which also keeps ids monotonic if the clock steps
+# backwards.
+snapshot_next_id() {
+  local name="${1}" id="" newest=""
+  id="$(date -u +%Y%m%dT%H%M%SZ)"
+  newest="$(snapshot_latest "$name")"
+  if [[ -n "$newest" && ! "$id" > "$newest" ]]; then
+    id="${newest}b"
+  fi
+  while [[ -e "$(snapshot_path "$name" "$id")" ]]; do
+    id="${id}b"
+  done
+  printf '%s' "$id"
+}
+
 # snapshot_prune keeps the newest ${2} snapshots that are not protected.
 snapshot_prune() {
   local name="${1}" keep="${2}" ids total excess id

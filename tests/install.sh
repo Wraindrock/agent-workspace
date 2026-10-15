@@ -66,6 +66,24 @@ done
 # a PATH that offers docker and nothing else, for the engine selection tests
 DOCKER_ONLY_PATH="$BIN_DOCKER:$BIN_NOSH"
 
+# A PATH whose `date` freezes the snapshot-id call, so two snapshots can be made
+# inside the same "second" on demand - the condition under which ids used to be
+# handed back out in the wrong order. Everything else falls through to the real
+# date, and only the snapshot-id assertions below use this PATH.
+REAL_DATE="$(command -v date)"
+BIN_SAME_SECOND="$WORK/bin-same-second"
+mkdir -p "$BIN_SAME_SECOND"
+cat >"$BIN_SAME_SECOND/date" <<SHIM
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "-u" && "\${2:-}" == "+%Y%m%dT%H%M%SZ" ]]; then
+  printf '20261016T000000Z\n'
+  exit 0
+fi
+exec "$REAL_DATE" "\$@"
+SHIM
+chmod 0755 "$BIN_SAME_SECOND/date"
+SAME_SECOND_PATH="$BIN_SAME_SECOND:$PATH"
+
 PASS=0
 FAIL=0
 pass() { printf 'ok   %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -108,6 +126,9 @@ run_installer() { # run_installer PATH [args...]
   RUN_STATUS=$?
 }
 run() { run_installer "$PATH" "$@"; }
+# run_same_second runs the installer with a frozen snapshot clock (see
+# SAME_SECOND_PATH above), so every snapshot it takes lands in the same second.
+run_same_second() { run_installer "$SAME_SECOND_PATH" "$@"; }
 
 # run_piped feeds install.sh to bash on stdin, the way `curl ... | bash -s --`
 # does. Every other helper here passes the script as a *file*, which is why the
@@ -455,6 +476,35 @@ run snapshot prune1 --keep 2
 is "only the newest snapshots are kept" 2 "$(snap_count prune1)"
 
 # =========================================================================
+echo "snapshot ids"
+# Ids are second-granular and compared as strings, and deleting a snapshot frees
+# its id again. Handing out a merely-unused id therefore used to produce an id
+# that sorted *before* one that still existed, and `--keep 1` then pruned the very
+# snapshot it had just taken. Freezing the clock makes that reachable on demand;
+# on a real clock the whole scenario needs two snapshots inside one real second.
+run_same_second create --agent dsh --name sameid --yes
+run_same_second snapshot sameid --label first
+run_same_second snapshot sameid --label second
+is "two snapshots inside one second get distinct ids" 2 "$(snap_count sameid)"
+run_same_second snapshot sameid --label third --keep 1
+is "pruning down to one leaves one" 1 "$(snap_count sameid)"
+THIRD_SNAP="$(latest_snap sameid)"
+is "the one left is the snapshot just taken" third "$(snap_label sameid "$THIRD_SNAP")"
+# Both ids from this second are free again, and one of them sorts before
+# ${THIRD_SNAP}: the next snapshot must not take either of them.
+run_same_second snapshot sameid --label fourth
+FOURTH_SNAP="$(latest_snap sameid)"
+if [[ -n "$FOURTH_SNAP" && "$FOURTH_SNAP" > "$THIRD_SNAP" ]]; then
+  pass "a snapshot taken after its id was freed still sorts newest"
+else
+  fail "the new snapshot ${FOURTH_SNAP} does not sort after ${THIRD_SNAP} (ids: $(snap_ids sameid | tr '\n' ' '))"
+fi
+is "the newest snapshot is the one just taken" fourth "$(snap_label sameid "$FOURTH_SNAP")"
+run_same_second snapshot sameid --label fifth --keep 1
+FIFTH_SNAP="$(latest_snap sameid)"
+is "pruning keeps the snapshot it has just taken" fifth "$(snap_label sameid "$FIFTH_SNAP")"
+
+# =========================================================================
 echo "snapshot safety"
 # a write that leaves an unreadable archive is not kept as a silent promise
 run create --agent dsh --name badarc --yes
@@ -480,20 +530,13 @@ contains "pruning reports the container that runs from a snapshot" "still used b
 exists "the in-use snapshot record is kept" "$(snap_root keeper)/$KEEP_SNAP"
 exists "the in-use snapshot image is kept" "$FAKE_ENGINE_STATE/images/agent-workspace_snapshot-keeper_$KEEP_SNAP"
 is "the in-use snapshot survives the prune" 2 "$(snap_count keeper)"
-# Pruning keeps the newest `--keep 1` unprotected snapshots plus every protected
-# one, and deletes the excess in between. Asserting on a *named* id is what made
-# this flaky: snapshot ids are second-granular and a collision is disambiguated by
-# appending `b`, so three snapshots taken within one second sort as
-# `...Z`, `...Zb`, `...Zbb`. With `...Z` protected (both `keeper` and `keeplive`
-# run from its image) the prune deletes the middle one, and both `latest_snap` and
-# "newest unprotected" name `...Zbb` - the id the prune deliberately keeps. In CI
-# all three landed in the same second and the assertion failed while passing here.
-#
-# What is stable regardless of timing: `snapshot keeper --keep 1` creates one new
-# snapshot and then prunes down to the policy, so the survivors are the protected
-# one plus the newest; a pre-existing unprotected snapshot is what disappears, and
-# the protected record plus its image survive. Asserting on set difference keeps
-# this independent of second-granularity ids.
+# Pruning keeps the newest `--keep N` unprotected snapshots plus every protected one.
+# Asserting on a *named* id here is what made this flaky: ids are second-granular, and
+# whether the snapshot this run takes sorts after the one already there used to depend
+# on the clock (see the "snapshot ids" block above, which pins that down on a frozen
+# clock). What is stable regardless of timing: the run takes one new snapshot and then
+# prunes to the policy, so the pile still holds the protected snapshot plus the newest
+# one, and what disappears is a snapshot that was there before and is not protected.
 BEFORE_PILE="$(snap_ids keeper)"
 run snapshot keeper --keep 1
 is "an unused older snapshot is still pruned" 2 "$(snap_count keeper)"
@@ -503,16 +546,26 @@ if printf '%s\n' "$AFTER_PILE" | grep -qx "$KEEP_SNAP"; then
 else
   fail "the protected snapshot ${KEEP_SNAP} was pruned (survivors: $(printf '%s' "$AFTER_PILE" | tr '\n' ' '))"
 fi
-# the snapshot that disappeared must be one that existed before and is not protected
+# The snapshot this run took must be the newest one, or the prune would have been
+# choosing between ids the clock ordered rather than the policy - which is the defect
+# the "snapshot ids" block above exists to catch, not a detail of it.
+NEW_SNAP="$(comm -13 <(printf '%s\n' "$BEFORE_PILE" | sort) <(printf '%s\n' "$AFTER_PILE" | sort))"
+if [[ -n "$NEW_SNAP" && "$(printf '%s\n' "$AFTER_PILE" | tail -1)" == "$NEW_SNAP" ]]; then
+  pass "the snapshot this run took is the newest, so the prune had a real choice"
+else
+  fail "the new snapshot did not sort newest (before: $(printf '%s' "$BEFORE_PILE" | tr '\n' ' ') / after: $(printf '%s' "$AFTER_PILE" | tr '\n' ' '))"
+fi
+# Whatever disappeared must have existed before and must not be the protected one.
 DROPPED="$(comm -23 <(printf '%s\n' "$BEFORE_PILE" | sort) <(printf '%s\n' "$AFTER_PILE" | sort))"
 if [[ -z "$DROPPED" ]]; then
   fail "the prune removed nothing, so it never exercised the excess path"
-elif [[ "$(printf '%s\n' "$DROPPED" | grep -c .)" -ne 1 ]]; then
-  fail "the prune removed more than one snapshot: $(printf '%s' "$DROPPED" | tr '\n' ' ')"
-elif [[ "$DROPPED" == "$KEEP_SNAP" ]]; then
+elif printf '%s\n' "$DROPPED" | grep -qx "$KEEP_SNAP"; then
   fail "the prune removed the protected snapshot ${KEEP_SNAP}"
 else
-  missing "the unused snapshot is gone" "$(snap_root keeper)/$DROPPED"
+  while IFS= read -r dropped_id; do
+    [[ -n "$dropped_id" ]] || continue
+    missing "the unused snapshot $dropped_id is gone" "$(snap_root keeper)/$dropped_id"
+  done < <(printf '%s\n' "$DROPPED")
 fi
 
 # an image a container this installer does not manage still runs from: the engine

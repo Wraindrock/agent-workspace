@@ -447,10 +447,7 @@ cmd_snapshot() {
   local name="${1}" label="${2:-manual}" soft="${3:-0}" id="" ref="" dir=""
   require_container "$name"
   state_engine "$name"
-  id="$(date -u +%Y%m%dT%H%M%SZ)"
-  while [[ -e "$(snapshot_path "$name" "$id")" ]]; do
-    id="${id}b"
-  done
+  id="$(snapshot_next_id "$name")"
   ref="$(snapshot_image "$name" "$id")"
   dir="$(snapshot_path "$name" "$id")"
   install -d -m 0700 "$dir"
