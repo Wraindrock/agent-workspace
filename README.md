@@ -346,6 +346,24 @@ boundary against the agent. A daily
 `agent-workspace-health.timer` runs `agent-workspace doctor --quiet` so drift
 shows up in `journalctl` instead of in a broken agent session.
 
+## Interface language
+
+`install.sh` speaks the language of the host locale, resolved in this order: `LC_ALL`,
+`LC_MESSAGES`, `LANG`. English and Simplified Chinese (`zh`) are translated today; every other
+locale falls back to English as a whole rather than showing a half-translated mix. Set
+`AW_LANG_OVERRIDE=en` (or `zh`) to pick one explicitly.
+
+What is translated is everything the installer says to you: the TUI, prompts, section headings,
+table headers, `--help`, `doctor`, and every error and confirmation. `tests/i18n.sh` asserts that
+no message bypasses the catalogue, that no key is defined twice, and that the command and flag
+column of `--help` is byte-identical in both languages, so a translation cannot quietly rename a
+flag.
+
+Four things stay English on purpose - the boundary rather than an oversight: the "needs bash 4.4"
+guard and the bootstrap's "fetched N files" line, which are printed before the catalogue has been
+fetched; the `CONTAINER=`/`NAME` declaration-file format, which is machine-readable; and the
+`dry-run` label with the engine command it prints, which is a shell command you may copy verbatim.
+
 ## Notes and limitations
 
 - GHCR creates a new package **private**. This project's package is public, so

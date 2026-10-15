@@ -22,13 +22,13 @@ resolve_engine() {
   local wanted="${1:-auto}" available count
   available="$(detect_engines)"
   if [[ -z "$available" ]]; then
-    die "neither podman nor docker is installed; install one of them first"
+    die_k need_engine
   fi
   if [[ "$wanted" == "auto" ]]; then
     ENGINE="$(printf '%s\n' "$available" | head -n 1)"
     count="$(printf '%s\n' "$available" | wc -l)"
     if [[ "$count" -gt 1 ]]; then
-      warn "both podman and docker are installed; using ${ENGINE} (override with --engine)"
+      warn_k warn_both_engines "${ENGINE}"
     fi
   else
     if ! printf '%s\n' "$available" | grep -qx "$wanted"; then
@@ -44,7 +44,7 @@ use_engine() {
   local name="${1:-}"
   [[ -z "$name" ]] && return 0
   if ! command -v "$name" >/dev/null 2>&1; then
-    die "container engine ${name} is required for this container but is not installed"
+    die_k err_engine_required "${name}"
   fi
   ENGINE="$name"
   ENGINE_BIN="$name"

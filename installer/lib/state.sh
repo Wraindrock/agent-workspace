@@ -146,16 +146,16 @@ snapshot_delete() {
   fi
   if [[ -n "$holder" ]]; then
     if [[ "$force" -eq 1 ]]; then
-      warn "keeping image ${image}: container ${holder} runs from it (remove that container, then prune images)"
+      warn_k kept_image_in_use "${image}" "${holder}"
       rm -rf "${dir}"
       return 0
     fi
-    warn "snapshot ${id} of ${name} is still used by ${holder}; keeping it and its image ${image}"
+    warn_k kept_snapshot_in_use "${id}" "${name}" "${holder}" "${image}"
     return 1
   fi
   if eng_image_exists "$image"; then
     if ! run_engine rmi "$image" >/dev/null 2>&1; then
-      warn "image ${image} could not be removed (it may still be in use); keeping snapshot ${id}"
+      warn_k image_undeletable "${image}" "${id}"
       return 1
     fi
   fi

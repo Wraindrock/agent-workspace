@@ -34,6 +34,31 @@ agent_binary_of() { local binaries="${AGENT_BINARIES[${1}]:-}"; printf '%s' "${b
 agent_title_of()  { printf '%s' "${AGENT_TITLES[${1}]:-${1}}"; }
 agent_envs_for()  { printf '%s' "${AGENT_ENVS[${1}]:-}"; }
 
+# agent_launch_command AGENT prints a complete, runnable command line for the
+# agent - not just the binary name.
+#
+# Some agents cannot be started by naming their binary alone. `dsh` boots a
+# *profile* (`dsh [--profile] <name>`): invoked bare it exits immediately with
+# `error: --profile <name> is required`, so `run <image> dsh` started a container
+# that died the moment it came up. The profile also has to be one the image can
+# actually initialise: the shipped, self-initialising set is `web`, `headless`,
+# `sdk`, `sdk-minimal` and `acp` (per the package's own README). A profile the
+# image does not ship - such as one that exists only in the *host's* $DSH_HOME -
+# fails with `profile "<name>" does not exist`. Naming the command an agent needs
+# is agent-specific knowledge, so it lives here beside the catalogue rather than at
+# each call site.
+#
+# `headless` is the one that matches what `ephemeral` promises: answer one task and
+# exit, so the container is disposed of on exit. Only a command that reaches a
+# prompt or completes a task belongs here; a server that does not return would
+# change what the mode means.
+agent_launch_command() {
+  case "${1:-}" in
+    dsh) printf 'dsh --profile headless' ;;
+    *)   agent_binary_of "${1:-}" ;;
+  esac
+}
+
 # image_agents prints "name<TAB>binaries<TAB>title<TAB>env" for the image.
 image_agents() {
   [[ -n "${ENGINE_BIN:-}" ]] || return 0

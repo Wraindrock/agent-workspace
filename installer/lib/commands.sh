@@ -16,7 +16,7 @@
 # --- small helpers ---------------------------------------------------------
 
 require_container() {
-  state_exists "${1}" || die "no container named '${1}' is managed by this installer (try: install.sh list)"
+  state_exists "${1}" || die_k err_no_such_container "${1}"
 }
 
 container_agent()      { state_get "${1}" AGENT; }
@@ -50,18 +50,26 @@ ensure_image() {
   local ref="${1}"
   eng_image_exists "$ref" && return 0
   if [[ "${NO_PULL:-0}" -eq 1 ]]; then
-    die "image ${ref} is not available locally and --no-pull was given"
+    die_k err_image_missing "${ref}"
   fi
-  msg "pulling ${ref}"
+  msg_k pulling "${ref}"
   if [[ -n "${GUM_BIN:-}" ]]; then
-    ui_spin "Pulling ${ref}" "$ENGINE_BIN" pull "$ref" || die "could not pull ${ref}"
+    ui_spin "$(tf pulling "${ref}")" "$ENGINE_BIN" pull "$ref" || die_k err_pull_failed "${ref}"
   else
-    "$ENGINE_BIN" pull "$ref" || die "could not pull ${ref}"
+    "$ENGINE_BIN" pull "$ref" || die_k err_pull_failed "${ref}"
   fi
 }
 
 confirm() {
   [[ "${ASSUME_YES:-0}" -eq 1 ]] && return 0
+  # A prompt nobody can answer is not a "no". With no terminal the answer would be
+  # an EOF read, and a destructive command that aborts on EOF and exits 0 is
+  # indistinguishable from one that succeeded -- the caller's `remove box && ...`
+  # would run its success branch over a container that is still there. Refuse
+  # explicitly instead, and make the scripted caller say --yes.
+  if ! ui_enabled; then
+    die_k err_refuse_no_confirm
+  fi
   ui_confirm "${1}"
 }
 
@@ -123,9 +131,9 @@ create_container_from() {
         local waited=0 timeout="${CONTAINER_READY_TIMEOUT:-30}"
         until eng_container_running "$name"; do
           if [[ "${waited}" -ge "${timeout}" ]]; then
-            warn "container ${name} did not stay up; recent log lines:"
+            warn_k err_did_not_stay_up "${name}"
             "$ENGINE_BIN" logs --tail 20 "$name" 2>/dev/null || true
-            die "container ${name} is not running (docs/containers.md#troubleshooting explains host limits)"
+            die_k err_not_running "${name}"
           fi
           sleep 1
           waited=$((waited + 1))
@@ -134,7 +142,7 @@ create_container_from() {
       ;;
     ephemeral)
       if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
-        warn "--web-port is ignored for ephemeral containers; they have no long-running web UI"
+        warn_k warn_web_port_ephemeral
       fi
       local -a eargs=(run --rm --name "$name" --hostname "$name")
       if [[ -t 0 ]] && [[ -t 1 ]]; then
@@ -147,11 +155,11 @@ create_container_from() {
       eargs+=(--workdir /workspace)
       eargs+=(--env "AGENT_WORKSPACE_AGENT=$agent")
       [[ -f "$env_file" ]] && eargs+=(--env-file "$env_file")
-      eargs+=("$image_ref" "$(agent_binary_of "$agent")")
+      eargs+=("$image_ref" "$(agent_launch_command "$agent")")
       run_engine "${eargs[@]}"
       ;;
     *)
-      die "unknown mode '${mode}' (expected persistent or ephemeral)"
+      die_k err_unknown_mode "${mode}"
       ;;
   esac
 
@@ -179,10 +187,10 @@ cmd_list() {
   local names name agent mode engine status snapshots web
   names="$(state_list)"
   if [[ -z "$names" ]]; then
-    msg "no containers yet; create one with: install.sh create"
+    msg_k no_containers_yet "install.sh create"
     return 0
   fi
-  printf '%-18s %-10s %-11s %-8s %-9s %-6s %s\n' NAME AGENT MODE ENGINE STATE WEB SNAPSHOTS
+  printf '%-18s %-10s %-11s %-8s %-9s %-6s %s\n' "$(t col_name)" "$(t col_agent)" "$(t col_mode)" "$(t col_engine)" "$(t col_state)" "$(t col_web)" "$(t col_snapshots)"
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     state_engine_soft "$name"
@@ -211,10 +219,10 @@ cmd_snapshots() {
   require_container "$name"
   ids="$(snapshot_list "$name")"
   if [[ -z "$ids" ]]; then
-    msg "no snapshots for ${name}"
+    msg_k no_snapshots "${name}"
     return 0
   fi
-  printf '%-22s %-21s %-12s %s\n' ID CREATED LABEL SIZE
+  printf '%-22s %-21s %-12s %s\n' "$(t col_id)" "$(t col_created)" "$(t col_label)" "$(t col_size)"
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
     created="$(snapshot_get "$name" "$id" CREATED)"
@@ -224,7 +232,7 @@ cmd_snapshots() {
     else
       size="-"
     fi
-    printf '%-22s %-21s %-12s %s\n' "$id" "${created:-unknown}" "${label:--}" "$size"
+    printf '%-22s %-21s %-12s %s\n' "$id" "${created:-$(t unknown_value)}" "${label:--}" "$size"
   done <<<"$ids"
 }
 
@@ -235,11 +243,11 @@ cmd_start() {
   require_container "$name"
   state_engine "$name"
   if eng_container_running "$name"; then
-    ok "${name} is already running"
+    ok_k already_running "${name}"
     return 0
   fi
   eng_start "$name" >/dev/null
-  ok "started ${name}"
+  ok_k started "${name}"
 }
 
 cmd_stop() {
@@ -247,7 +255,7 @@ cmd_stop() {
   require_container "$name"
   state_engine "$name"
   eng_stop "$name"
-  ok "stopped ${name}"
+  ok_k stopped_name "${name}"
 }
 
 cmd_restart() {
@@ -256,7 +264,7 @@ cmd_restart() {
   state_engine "$name"
   eng_stop "$name"
   eng_start "$name" >/dev/null
-  ok "restarted ${name}"
+  ok_k restarted "${name}"
 }
 
 cmd_logs() {
@@ -276,20 +284,20 @@ cmd_enter() {
   require_container "$name"
   state_engine "$name"
   if [[ "$(container_mode "$name")" == "ephemeral" ]]; then
-    die "container ${name} was created in ephemeral mode and cannot be entered"
+    die_k err_ephemeral_enter "${name}"
   fi
   if ! eng_container_running "$name"; then
-    msg "starting ${name}"
+    msg_k starting_name "${name}"
     eng_start "$name" >/dev/null
     sleep 2
   fi
   if ! eng_container_running "$name"; then
-    die "container ${name} is not running (try: install.sh logs ${name})"
+    die_k err_not_running_try "${name}" "install.sh logs ${name}"
   fi
   if [[ "${#}" -gt 0 ]]; then
     eng_exec "$name" "$@"
   else
-    eng_exec "$name" "$(agent_binary_of "$(container_agent "$name")")"
+    eng_exec "$name" "$(agent_launch_command "$(container_agent "$name")")"
   fi
 }
 
@@ -321,11 +329,11 @@ cmd_web() {
   agent="$(container_agent "$name")"
 
   if [[ "$(container_mode "$name")" != "persistent" ]]; then
-    die "'${name}' is an ephemeral container; its web UI would exit with the container"
+    die_k err_web_ephemeral "${name}"
   fi
-  webcmd="$(agent_web_command "$agent")" || die "no web UI this installer knows how to open for agent '${agent}'"
+  webcmd="$(agent_web_command "$agent")" || die_k err_no_web_ui "${agent}"
   if [[ "$(state_get "$name" WEB)" == "0" ]]; then
-    die "'${name}' was created with --no-web; recreate it without --no-web to publish a web port"
+    die_k err_web_no_web "${name}"
   fi
 
   port="$(state_get "$name" WEB_HOST_PORT)"
@@ -333,12 +341,12 @@ cmd_web() {
     port="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
     port="${port##*:}"
   fi
-  [[ -n "$port" ]] || die "'${name}' publishes no web port; recreate it (install.sh recover ${name}) after upgrading the installer"
+  [[ -n "$port" ]] || die_k err_web_no_port "${name}" "${name}"
 
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     printf 'dry-run: %s exec --detach --user %s --env HOME=/home/%s %s /bin/bash -c %q\n' \
       "$ENGINE_BIN" "$AGENT_USER" "$AGENT_USER" "$name" "$webcmd"
-    printf 'url: http://127.0.0.1:%s/\n' "$port"
+    printf '%s\n' "$(tf dry_url "$port")"
     return 0
   fi
 
@@ -346,14 +354,14 @@ cmd_web() {
     eng_start "$name" >/dev/null 2>&1 || true
     sleep 2
   fi
-  eng_container_running "$name" || die "container ${name} is not running; start it with: install.sh start ${name}"
+  eng_container_running "$name" || die_k err_start_it "${name}"
 
   log_dir="/home/${AGENT_USER}/.cache/agent-workspace"
   log_file="${log_dir}/dsh-web.log"
 
   if container_web_up "$name" "${WEB_CONTAINER_PORT:-3080}"; then
     running=1
-    msg "the web UI is already running in ${name}"
+    msg_k web_already_running "${name}"
   fi
 
   if [[ "$running" -eq 0 ]]; then
@@ -368,12 +376,12 @@ cmd_web() {
     sleep 1
   done
 
-  ok "${agent} web UI is published on http://127.0.0.1:${port}/ (container port ${WEB_CONTAINER_PORT:-3080})"
+  ok_k web_published "${agent}" "${port}" "${WEB_CONTAINER_PORT:-3080}"
   if [[ -n "$token" ]]; then
-    msg "open: http://127.0.0.1:${port}/?token=${token}"
-    msg "the first visit signs that browser in for 30 days; afterwards http://127.0.0.1:${port}/ is enough"
+    msg_k web_open_url "${port}" "${token}"
+    msg_k web_first_visit "${port}"
   else
-    warn "no launch token in the log yet; inside the container it is ${log_file}"
+    warn_k web_no_token "${log_file}"
   fi
 }
 
@@ -394,19 +402,19 @@ archive_home_volume() {
   dir="$(snapshot_path "$name" "$id")"
   image="$(snapshot_image "$name" "$id")"
   if ! eng_volume_exists "$volume"; then
-    warn "home volume ${volume} does not exist; the snapshot holds the filesystem only"
+    warn_k snap_no_volume "${volume}"
     return 0
   fi
   if run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data:ro" \
       --volume "${dir}:/backup$(engine_mount_suffix)" "$image" czf /backup/home.tar.gz -C /data .; then
     if home_archive_ok "${dir}/home.tar.gz"; then
-      ok "archived the home volume into ${dir}/home.tar.gz"
+      ok_k snap_archived "${dir}"
     else
       rm -f "${dir}/home.tar.gz"
-      warn "the home archive could not be read back; deleted it so snapshot ${id} cannot silently restore a broken home"
+      warn_k snap_archive_unreadable "${id}"
     fi
   else
-    warn "could not archive ${volume} (no tar in the image?); the snapshot holds the filesystem only"
+    warn_k snap_no_tar "${volume}"
   fi
 }
 
@@ -416,11 +424,11 @@ restore_home_volume() {
   dir="$(snapshot_path "$name" "$id")"
   image="$(snapshot_image "$name" "$id")"
   if [[ ! -s "${dir}/home.tar.gz" ]]; then
-    warn "snapshot ${id} has no home archive; the home volume is left as it is"
+    warn_k snap_no_archive "${id}"
     return 0
   fi
   if ! home_archive_ok "${dir}/home.tar.gz"; then
-    die "the home archive of snapshot ${id} is unreadable (${dir}/home.tar.gz); nothing was changed"
+    die_k snap_archive_bad "${id}" "${dir}"
   fi
   entries="$(tar -tzf "${dir}/home.tar.gz" 2>/dev/null | grep -c . || true)"
   if ! eng_volume_exists "$volume"; then
@@ -428,7 +436,7 @@ restore_home_volume() {
   fi
   run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data" \
     --volume "${dir}:/backup$(engine_mount_suffix)" "$image" xzf /backup/home.tar.gz -C /data
-  ok "restored the home volume from snapshot ${id} (${entries:-0} entries)"
+  ok_k home_restored "${id}" "${entries:-0}"
 }
 
 # cmd_snapshot NAME [LABEL] [SOFT] commits the filesystem and archives the home
@@ -449,17 +457,17 @@ cmd_snapshot() {
   if ! eng_commit "$name" "$ref"; then
     rm -rf "$dir"
     if [[ "$soft" -eq 1 ]]; then
-      warn "could not snapshot ${name} before this operation; continuing without a safety snapshot"
+      warn_k warn_no_safety_snap "${name}"
       return 1
     fi
-    die "could not snapshot ${name}; is the container present? (try: install.sh recover ${name})"
+    die_k err_could_not_snapshot "${name}" "${name}"
   fi
   create_snapshot_meta "$name" "$id" "$label" "$ref"
   archive_home_volume "$name" "$id"
   state_set "$name" SNAPSHOT_LAST "$id"
   state_record_event "$name" "snapshot ${id} (${label})"
   snapshot_prune "$name" "${SNAPSHOT_KEEP:-5}"
-  ok "snapshot ${id} of ${name} (${label})"
+  ok_k snapshot_created "${id}" "${name}" "${label}"
 }
 
 create_snapshot_meta() {
@@ -496,8 +504,8 @@ resolve_snapshot() {
     id="$(state_get "$name" SNAPSHOT_LAST)"
     [[ -n "$id" ]] || id="$(snapshot_latest "$name")"
   fi
-  [[ -n "$id" ]] || die "no snapshot available for ${name} (run: install.sh snapshot ${name})"
-  [[ -f "$(snapshot_meta "$name" "$id")" ]] || die "snapshot ${id} not found for ${name}"
+  [[ -n "$id" ]] || die_k err_no_snapshot "${name}"
+  [[ -f "$(snapshot_meta "$name" "$id")" ]] || die_k err_snapshot_not_found "${id}" "${name}"
   printf '%s' "$id"
 }
 
@@ -508,28 +516,28 @@ cmd_rollback() {
   id="$(resolve_snapshot "$name" "$target")"
   ref="$(snapshot_ref "$name" "$id")"
   if [[ "${DRY_RUN:-0}" -eq 0 ]] && ! eng_image_exists "$ref"; then
-    die "snapshot image ${ref} is gone; snapshot ${id} cannot be restored"
+    die_k snap_image_gone "${ref}" "${id}"
   fi
   # refuse before anything is destroyed: a container that has already been
   # removed cannot be brought back if the archive turns out to be unreadable
   archive="$(snapshot_path "$name" "$id")/home.tar.gz"
   if [[ -e "$archive" ]] && ! home_archive_ok "$archive"; then
-    die "the home archive of snapshot ${id} is unreadable (${archive}); nothing was changed"
+    die_k snap_archive_bad2 "${id}" "${archive}"
   fi
-  confirm "Replace container ${name} with snapshot ${id}?" || { warn "aborted"; return 0; }
+  confirm "$(tf confirm_rollback "${name}" "${id}")" || { warn_k aborted; return 1; }
   agent="$(container_agent "$name")"
   mode="$(container_mode "$name")"
   workspace="$(container_workspace "$name")"
   declared="$(snapshot_get "$name" "$id" IMAGE)"
   [[ -n "$declared" ]] || declared="$(state_get "$name" IMAGE)"
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-    printf 'dry-run: would snapshot %s before rolling it back\n' "$name"
+    printf '%s\n' "$(tf dry_snapshot_rollback "$name")"
   elif [[ "${SKIP_SAFETY:-0}" -eq 1 ]]; then
-    msg "skipping the safety snapshot (--skip-safety)"
+    msg_k skip_safety
   elif eng_container_exists "$name"; then
     # the container is replaced below; keep what it looks like now, so a
     # rollback that turns out to be a mistake is itself reversible
-    msg "snapshotting ${name} before the rollback"
+    msg_k snapshotting_before_rollback "${name}"
     cmd_snapshot "$name" "pre-rollback" 1 || true
   fi
   eng_stop "$name"
@@ -538,7 +546,7 @@ cmd_rollback() {
   create_container_from "$name" "$agent" "$mode" "$workspace" "$ref" "$declared"
   state_set "$name" SNAPSHOT_LAST "$id"
   state_record_event "$name" "rolled back to ${id}"
-  ok "rolled ${name} back to snapshot ${id}"
+  ok_k rolled_back_to "${name}" "${id}"
 }
 
 cmd_recover() {
@@ -548,15 +556,15 @@ cmd_recover() {
 
   if eng_container_exists "$name"; then
     if eng_container_running "$name"; then
-      ok "${name} is running; nothing to recover"
+      ok_k recover_running "${name}"
       return 0
     fi
     eng_start "$name" >/dev/null
     sleep 2
     if eng_container_running "$name"; then
-      ok "recovered ${name} (restarted the existing container)"
+      ok_k recovered_restart "${name}"
     else
-      warn "${name} exists but does not stay up; check: install.sh logs ${name}"
+      warn_k recover_not_staying_up "${name}" "${name}"
     fi
     return 0
   fi
@@ -575,14 +583,14 @@ cmd_recover() {
     create_container_from "$name" "$agent" "$mode" "$workspace" "$ref" "$declared"
     state_set "$name" SNAPSHOT_LAST "$id"
     state_record_event "$name" "recovered from ${id}"
-    ok "recovered ${name} from snapshot ${id}"
+    ok_k recovered_from_snap "${name}" "${id}"
   else
     image="$(container_run_image "$name")"
     [[ -n "$image" ]] || image="$IMAGE"
     ensure_image "$image"
     create_container_from "$name" "$agent" "$mode" "$workspace" "$image" "$(state_get "$name" IMAGE)"
     state_record_event "$name" "recovered from image ${image}"
-    warn "no snapshot was available; ${name} was rebuilt from ${image} (the home volume is kept)"
+    warn_k warn_rebuilt "${name}" "${image}"
   fi
 }
 
@@ -590,12 +598,12 @@ cmd_fork() {
   local src="${1}" new="${2}" agent="${3:-}" mode="${4:-}" workspace="${5:-}" snap="${6:-}"
   local image="" src_volume="" new_volume="" engine=""
   require_container "$src"
-  validate_name "$new" || die "invalid container name '${new}'"
-  state_exists "$new" && die "container ${new} already exists"
+  validate_name "$new" || die_k err_invalid_name "${new}"
+  state_exists "$new" && die_k err_name_exists "${new}"
   engine="$(state_get "$src" ENGINE)"
   use_engine "${engine:-$ENGINE}"
   agent="${agent:-$(container_agent "$src")}"
-  agent_known "$agent" || die "unknown agent '${agent}'"
+  agent_known "$agent" || die_k err_unknown_agent "${agent}"
   mode="${mode:-$(container_mode "$src")}"
   workspace="${workspace:-$(default_workspace "$new")}"
 
@@ -605,25 +613,25 @@ cmd_fork() {
   elif [[ "${FORK_LIVE:-0}" -eq 1 ]]; then
     image="$(container_run_image "$src")"
   else
-    msg "snapshotting ${src} before the fork"
+    msg_k snapshotting_before_fork "${src}"
     cmd_snapshot "$src" "fork-source" >/dev/null
     snap="$(state_get "$src" SNAPSHOT_LAST)"
     image="$(snapshot_ref "$src" "$snap")"
   fi
 
   new_volume="$(volume_name "$new")"
-  eng_volume_exists "$new_volume" && die "volume ${new_volume} already exists"
+  eng_volume_exists "$new_volume" && die_k err_volume_exists "${new_volume}"
   run_engine volume create "$new_volume" >/dev/null
 
   if [[ -n "$snap" ]] && [[ -s "$(snapshot_path "$src" "$snap")/home.tar.gz" ]]; then
-    msg "copying the home volume from snapshot ${snap}"
+    msg_k forking_copy_snap "${snap}"
     run_engine run --rm --entrypoint /usr/bin/tar --volume "${new_volume}:/data" \
       --volume "$(snapshot_path "$src" "$snap"):/backup$(engine_mount_suffix)" "$image" \
       xzf /backup/home.tar.gz -C /data
   else
     src_volume="$(container_home_volume "$src")"
     if eng_volume_exists "$src_volume"; then
-      msg "copying the live home volume ${src_volume}"
+      msg_k forking_copy_live "${src_volume}"
       run_engine run --rm --entrypoint /bin/bash --volume "${src_volume}:/from:ro" --volume "${new_volume}:/to" \
         "$image" -c 'cd /from && tar cf - . | tar xf - -C /to'
     fi
@@ -637,13 +645,13 @@ cmd_fork() {
     umask 077
     cp "$src_env" "$new_env"
     chmod 0600 "$new_env"
-    warn "copied credentials from ${src}; review ${new_env} before use"
+    warn_k fork_copied_creds "${src}" "${new_env}"
   fi
 
   create_container_from "$new" "$agent" "$mode" "$workspace" "$image" "$(state_get "$src" IMAGE)"
   state_set "$new" FORKED_FROM "$src"
   [[ -n "$snap" ]] && state_set "$new" FORKED_AT "$snap"
-  ok "forked ${src} into ${new} (agent ${agent}, mode ${mode})"
+  ok_k forked_into "${src}" "${new}" "${agent}" "${mode}"
 }
 
 cmd_upgrade() {
@@ -653,7 +661,7 @@ cmd_upgrade() {
   [[ -n "$target" ]] || target="$(state_get "$name" IMAGE)"
   [[ -n "$target" ]] || target="$IMAGE"
   ensure_image "$target"
-  confirm "Upgrade ${name} to ${target}? A snapshot is taken first." || { warn "aborted"; return 0; }
+  confirm "$(tf confirm_upgrade "${name}" "${target}")" || { warn_k aborted; return 1; }
   cmd_snapshot "$name" "pre-upgrade" >/dev/null
   agent="$(container_agent "$name")"
   mode="$(container_mode "$name")"
@@ -662,20 +670,20 @@ cmd_upgrade() {
   eng_remove "$name"
   create_container_from "$name" "$agent" "$mode" "$workspace" "$target" "$target"
   state_record_event "$name" "upgraded to ${target}"
-  ok "upgraded ${name} to ${target}"
+  ok_k upgraded_named "${name}" "${target}"
 }
 
 cmd_remove() {
   local name="${1}" id=""
   require_container "$name"
   state_engine "$name"
-  confirm "Remove container ${name} and its volume?" || { warn "aborted"; return 0; }
+  confirm "$(tf confirm_remove "${name}")" || { warn_k aborted; return 1; }
   if eng_container_exists "$name"; then
     eng_stop "$name"
     eng_remove "$name"
   fi
   if [[ "${KEEP_VOLUME:-0}" -eq 1 ]]; then
-    msg "kept volume $(container_home_volume "$name")"
+    msg_k kept_volume "$(container_home_volume "$name")"
   else
     eng_volume_remove "$(container_home_volume "$name")"
   fi
@@ -691,60 +699,60 @@ cmd_remove() {
     if [[ "$kept" -eq 0 ]]; then
       rm -rf "$(snapshot_root "$name")"
     else
-      msg "kept ${kept} snapshot(s) whose image is still in use: $(snapshot_root "$name")"
+      msg_k kept_snapshots_in_use "${kept}" "$(snapshot_root "$name")"
     fi
   else
-    msg "kept snapshots for ${name} in $(snapshot_root "$name")"
+    msg_k kept_snapshots "${name}" "$(snapshot_root "$name")"
   fi
   rm -rf "$(state_dir "$name")"
-  ok "removed ${name}"
+  ok_k removed_named "${name}"
 }
 
 # --- host doctor -----------------------------------------------------------
 
 cmd_doctor() {
   local problems=0 names name engine status image volume env_file id archive web mapped
-  heading "Environment"
+  heading_k head_environment
   local available
   available="$(detect_engines)"
   if [[ -z "$available" ]]; then
-    report_bad "no container engine found (install podman or docker)"
+    report_bad_k doc_no_engine
     problems=$((problems + 1))
   else
     while IFS= read -r engine; do
       [[ -n "$engine" ]] || continue
-      report_ok "engine available: $engine ($("$engine" --version 2>/dev/null | head -n 1))"
+      report_ok_k doc_engine "${engine}" "$("$engine" --version 2>/dev/null | head -n 1)"
     done <<<"$available"
   fi
-  report_ok "state directory: $DATA_HOME"
-  report_ok "credentials directory: $CONF_HOME/containers"
+  report_ok_k doc_state_dir "${DATA_HOME}"
+  report_ok_k doc_conf_dir "${CONF_HOME}/containers"
 
   names="$(state_list)"
   if [[ -z "$names" ]]; then
-    report_ok "no containers managed yet"
+    report_ok_k doc_no_containers
   fi
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    heading "Container ${name}"
+    heading_k head_container "${name}"
     state_engine_soft "$name"
     engine="$(state_get "$name" ENGINE)"
     if ! command -v "$engine" >/dev/null 2>&1; then
-      report_bad "engine ${engine} is not installed"
+      report_bad_k doc_engine_missing "${engine}"
       problems=$((problems + 1))
     elif eng_container_exists "$name"; then
       status="$(eng_container_status "$name")"
-      report_ok "container exists (${status})"
+      report_ok_k doc_container_exists "${status}"
     else
-      report_bad "container is missing; run: install.sh recover ${name}"
+      report_bad_k doc_container_missing "${name}"
       problems=$((problems + 1))
     fi
 
     image="$(container_run_image "$name")"
     if command -v "$engine" >/dev/null 2>&1; then
       if eng_image_exists "$image"; then
-        report_ok "image present: ${image}"
+        report_ok_k doc_image_present "${image}"
       else
-        report_bad "image ${image} is not present; run: install.sh recover ${name}"
+        report_bad_k doc_image_missing "${image}" "${name}"
         problems=$((problems + 1))
       fi
     fi
@@ -752,9 +760,9 @@ cmd_doctor() {
     volume="$(container_home_volume "$name")"
     if [[ "$(container_mode "$name")" == "persistent" ]]; then
       if command -v "$engine" >/dev/null 2>&1 && eng_volume_exists "$volume"; then
-        report_ok "home volume present: ${volume}"
+        report_ok_k doc_volume_present "${volume}"
       else
-        report_bad "home volume ${volume} is missing"
+        report_bad_k doc_volume_missing "${volume}"
         problems=$((problems + 1))
       fi
     fi
@@ -764,9 +772,9 @@ cmd_doctor() {
       local mode_bits
       mode_bits="$(stat -c '%a' "$env_file" 2>/dev/null || printf 'unknown')"
       if [[ "$mode_bits" == "600" ]]; then
-        report_ok "credentials ${env_file} (mode 600)"
+        report_ok_k doc_creds_ok "${env_file}"
       else
-        report_bad "credentials ${env_file} have mode ${mode_bits}; expected 600"
+        report_bad_k doc_creds_mode "${env_file}" "${mode_bits}"
         problems=$((problems + 1))
       fi
     fi
@@ -776,9 +784,9 @@ cmd_doctor() {
       local mapped
       mapped="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
       if [[ -n "$mapped" ]]; then
-        report_ok "web UI published on ${mapped}"
+        report_ok_k doc_web_ok "${mapped}"
       else
-        report_bad "web UI is enabled but no host port is published; run: install.sh recover ${name}"
+        report_bad_k doc_web_missing "${name}"
         problems=$((problems + 1))
       fi
     fi
@@ -788,21 +796,21 @@ cmd_doctor() {
       archive="$(snapshot_path "$name" "$id")/home.tar.gz"
       if [[ -f "$archive" ]]; then
         if tar -tzf "$archive" >/dev/null 2>&1; then
-          report_ok "snapshot ${id} archive readable"
+          report_ok_k doc_snap_ok "${id}"
         else
-          report_bad "snapshot ${id} archive is corrupt: ${archive}"
+          report_bad_k doc_snap_bad "${id}" "${archive}"
           problems=$((problems + 1))
         fi
       fi
     done < <(snapshot_list "$name")
   done <<<"$names"
 
-  heading "Result"
+  heading_k head_result
   if [[ "$problems" -eq 0 ]]; then
-    ok "doctor: no problems found"
+    ok_k doctor_clean
     return 0
   fi
-  warn "doctor: ${problems} problem(s) found"
+  warn_k doctor_problems "${problems}"
   if [[ "${STRICT:-0}" -eq 1 ]]; then
     return 1
   fi

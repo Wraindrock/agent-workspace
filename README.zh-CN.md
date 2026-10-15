@@ -294,6 +294,20 @@ docs/                    架构、模块、agent、容器、回滚文档
 
 完整设计说明见 [docs/architecture.md](docs/architecture.md)。
 
+## 界面语言
+
+`install.sh` 说宿主机 locale 所指定的语言，按 `LC_ALL` → `LC_MESSAGES` → `LANG` 的顺序解析。
+目前有英文和简体中文（`zh`）两套译文；其他 locale 整体回退到英文，而不是显示半中半英。
+想显式指定，设 `AW_LANG_OVERRIDE=en`（或 `zh`）。
+
+翻译覆盖的是安装器对你说的一切：TUI、提问、章节标题、表头、`--help`、`doctor`，以及每一条
+报错和确认。`tests/i18n.sh` 会断言没有任何消息绕过目录、没有 key 被重复定义、且 `--help`
+的命令与选项列在两种语言下逐字节一致——这样译文就不可能悄悄改掉一个选项名。
+
+有四类内容故意保持英文，这是边界而不是疏漏：「需要 bash 4.4」的守卫和 bootstrap 的
+「fetched N files」，它们在目录被拉取之前就要打印；`CONTAINER=`/`NAME` 声明文件格式，
+它是机器可读的；以及 `dry-run` 标签和它打印的引擎命令，那是一条你可以直接复制的 shell 命令。
+
 ## 注意事项
 
 - GHCR 新建 package 时**默认是 private**。本项目的 package 已经设为 public，匿名

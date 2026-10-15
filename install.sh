@@ -101,21 +101,21 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 # shellcheck disable=SC2034  # read via the nameref in verify_checksum
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
-  [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
-  [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
-  [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
-  [installer/lib/i18n.sh]="5a640afcf9a42d1075564b1be2a471df84bba55e2ba5cc84313a819fdd095d3a"
-  [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
-  [installer/lib/ui.sh]="efc8792c727480927cac46ab7cebff15f3d6b1a30d19eb4a46293cce6fcc9245"
+  [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
+  [installer/lib/commands.sh]="e193b3cfb95badb5ead977c37066cea6efb4198d0fb311dde5a6b6fd5b216949"
+  [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
+  [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
+  [installer/lib/state.sh]="9e6399ad19c0d0655b044ac5e61ca3ad10a1f85c64d02f56974c5f4e3dc9303f"
+  [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
-  [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
-  [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
-  [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
-  [installer/lib/i18n.sh]="5a640afcf9a42d1075564b1be2a471df84bba55e2ba5cc84313a819fdd095d3a"
-  [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
-  [installer/lib/ui.sh]="efc8792c727480927cac46ab7cebff15f3d6b1a30d19eb4a46293cce6fcc9245"
+  [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
+  [installer/lib/commands.sh]="e193b3cfb95badb5ead977c37066cea6efb4198d0fb311dde5a6b6fd5b216949"
+  [installer/lib/engine.sh]="af6b926a02afc36be6deab21311678f3851e58c3b8feaa9b4dc745c8c08cf1f8"
+  [installer/lib/i18n.sh]="aceefffae35cc083b5adbd9c65469e1ab6c24ae0d1917ae69a9eb6994b12c5c5"
+  [installer/lib/state.sh]="9e6399ad19c0d0655b044ac5e61ca3ad10a1f85c64d02f56974c5f4e3dc9303f"
+  [installer/lib/ui.sh]="68edc6eeffacd8c958409d702ddac1296ed23c6aeb26e1db6a87e7411d5a1f24"
 )
 BOOTSTRAP_FILES=(
   image.env
@@ -390,71 +390,24 @@ report_ok()  { printf '%s✓%s %s\n' "${GREEN}" "${RESET}" "$*"; }
 report_bad() { printf '%s✗%s %s\n' "${RED}" "${RESET}" "$*"; }
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# The same four channels, keyed by a message id instead of by English text:
+# `msg_k KEY [args...]` renders the catalogue entry for KEY.
+#
+# Every key needs an entry in *both* languages (tests/i18n.sh asserts there is no
+# key present in one language only), so a message that exists at all is one a
+# non-English user can read. The plain msg/ok/warn/die remain for text assembled at
+# the call site, but prefer the keyed form: it is the only one whose coverage the
+# tests can check.
+msg_k()  { msg  "$(tf "$@")"; }
+ok_k()   { ok   "$(tf "$@")"; }
+warn_k() { warn "$(tf "$@")"; }
+die_k()  { die  "$(tf "$@")"; }
+report_ok_k()  { report_ok  "$(tf "$@")"; }
+report_bad_k() { report_bad "$(tf "$@")"; }
+heading_k()    { heading    "$(tf "$@")"; }
+
 usage() {
-  cat <<'USAGE'
-agent-workspace installer
-
-  ./install.sh                 open the interactive TUI (the normal way to use
-                               this project: pick agents, name the containers,
-                               choose a lifecycle, create them)
-  ./install.sh create [opts]   create containers without the TUI
-  ./install.sh list            list the containers created by this installer
-  ./install.sh enter NAME      run the container's agent interactively
-  ./install.sh shell NAME      open a login shell inside a container
-  ./install.sh web NAME        start the agent's web UI and print its host URL
-  ./install.sh logs NAME       show the container log
-  ./install.sh start|stop|restart NAME
-  ./install.sh snapshot NAME [--label TEXT] [--keep N]
-                               commit the filesystem and archive the home volume
-  ./install.sh snapshots NAME  list snapshots of a container
-  ./install.sh rollback NAME [--to ID]
-                               replace the container with a snapshot
-  ./install.sh recover NAME    rebuild a lost or stopped container
-  ./install.sh fork SRC NEW [--agent A] [--mode M] [--workspace DIR] [--from ID] [--live]
-                               branch a new container off an existing one
-  ./install.sh upgrade NAME [--image REF]
-                               move a container to a newer image (snapshot first)
-  ./install.sh remove NAME...  remove containers (add --purge-snapshots)
-  ./install.sh doctor [--strict]
-                               check engines, containers, volumes, credentials
-
-create options
-  --agent NAME        agent to run (see: install.sh create --help-agents)
-  --name NAME         container name (default: <agent>-box)
-  --count N           create N containers (N > 1 names them NAME-1..NAME-N)
-  --mode MODE         persistent (systemd, keeps state) or ephemeral (run once)
-  --workspace DIR     host directory mounted at /workspace
-  --env KEY=VALUE     extra environment variable for the container
-  --file FILE         read a declaration file ('-' for stdin):
-                        name agent [mode] [workspace]
-  --save FILE         write the created containers back out in that format
-
-create options for the agent web UI
-  --web-port N        host loopback port to publish (default: first free port
-                      at or above 3080)
-  --no-web            do not publish a web UI port for these containers
-
-global options
-  --engine auto|podman|docker   which engine to use (default: auto)
-  --image REF                   image to run (default: from image.env)
-  --no-tui                      never start the TUI; fail instead of prompting
-  --dry-run, -n                 print the engine commands instead of running
-  --no-pull                     never pull an image
-  --yes, -y                     assume yes for confirmations
-  --quiet, -q                   only print warnings and errors
-  --strict                      doctor only: exit non-zero on any problem
-  --keep N                      snapshot only: keep the newest N snapshots (default 5)
-  --purge-snapshots             remove: drop snapshots too
-  --keep-volume                 remove: keep the home volume
-  --skip-safety                 rollback: do not snapshot the container first
-  --follow, -f / --tail N       logs: follow the log / show the last N lines
-  --help-agents                 list the agents this build offers
-  --help, -h                    this help
-
-host paths
-  containers and snapshots:  $XDG_DATA_HOME (default ~/.local/share)/agent-workspace
-  credentials (mode 600):    $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/containers
-USAGE
+  usage_text
 }
 
 # --- configuration helpers -------------------------------------------------
@@ -509,18 +462,18 @@ write_env_file() {
   path="$(env_file_for "$name")"
   dir="$(dirname "$path")"
   if [[ "${#}" -eq 0 ]]; then
-    msg "no credentials collected for ${name}; you can add them later in ${path}"
+    msg_k creds_none "${name}" "${path}"
     return 0
   fi
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-    printf 'dry-run: would write %s with' "$path"
+    printf '%s' "$(tf dry_write "$path")"
     for kv in "$@"; do printf ' %s' "${kv%%=*}"; done
     printf '\n'
     return 0
   fi
   install -d -m 0700 "$dir"
   ( umask 077; : >"$path"; chmod 0600 "$path"; for kv in "$@"; do printf '%s\n' "$kv" >>"${path}"; done )
-  ok "wrote credentials to ${path} (mode 600)"
+  ok_k creds_written "${path}"
 }
 
 collect_secret() {
@@ -528,14 +481,14 @@ collect_secret() {
   [[ -n "${SECRETS[${key}]:-}" ]] && return 0
   if [[ -n "${!key:-}" ]]; then
     SECRETS["${key}"]="${!key}"
-    msg "using ${key} from the environment"
+    msg_k creds_from_env "${key}"
     return 0
   fi
   if ! ui_enabled; then
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
       SECRETS["${key}"]="dry-run-placeholder"
     else
-      msg "no terminal for prompts: skipping ${key} (add it later to $(env_file_for "$agent"))"
+      msg_k creds_no_tty "${key}" "$(env_file_for "${agent}")"
     fi
     return 0
   fi
@@ -555,7 +508,7 @@ spec_add() {
 
 show_specs() {
   local index
-  printf '%-18s %-10s %-11s %s\n' NAME AGENT MODE WORKSPACE
+  printf '%-18s %-10s %-11s %s\n' "$(t col_name)" "$(t col_agent)" "$(t col_mode)" "$(t col_workspace)"
   for index in "${!SPEC_NAME[@]}"; do
     printf '%-18s %-10s %-11s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
   done
@@ -567,7 +520,7 @@ parse_declaration() {
   if [[ "$source" == "-" ]]; then
     exec 0<&3
   else
-    [[ -f "$source" ]] || die "declaration file ${source} does not exist"
+    [[ -f "$source" ]] || die_k err_decl_missing "${source}"
     exec 0<"$source"
   fi
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -596,7 +549,7 @@ save_specs() {
       printf '%s %s %s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
     done
   } >"$file"
-  ok "wrote ${file}"
+  ok_k wrote_file "${file}"
 }
 
 # --- create ----------------------------------------------------------------
@@ -609,14 +562,14 @@ create_specs() {
     mode="${SPEC_MODE[index]}"
     workspace="${SPEC_WORKSPACE[index]}"
     if state_exists "$name"; then
-      warn "container ${name} is already managed; skipping (remove it first to recreate)"
+      warn_k warn_already_managed "${name}"
       continue
     fi
     if eng_container_exists "$name"; then
-      warn "a container named ${name} already exists outside this installer; skipping"
+      warn_k warn_exists_outside "${name}"
       continue
     fi
-    heading "Creating ${name} (${agent}, ${mode})"
+    heading_k head_creating "${name}" "${agent}" "${mode}"
     if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
       install -d -m 0755 "$workspace" 2>/dev/null || true
     fi
@@ -632,12 +585,12 @@ create_specs() {
       write_env_file "$name" "${envs[@]}"
     fi
     create_container_from "$name" "$agent" "$mode" "$workspace" "$IMAGE"
-    ok "created ${name} (agent ${agent}, mode ${mode})"
+    ok_k created_named "${name}" "${agent}" "${mode}"
     if [[ "${DRY_RUN:-0}" -eq 0 && "$(state_get "$name" WEB)" == "1" ]]; then
       local web_port
       web_port="$(state_get "$name" WEB_HOST_PORT)"
       if [[ -n "$web_port" ]]; then
-        msg "web UI: install.sh web ${name}  →  http://127.0.0.1:${web_port}/"
+        msg_k web_ui_line "${name}" "${web_port}"
       fi
     fi
   done
@@ -645,36 +598,36 @@ create_specs() {
 
 wizard_create() {
   local count index i agent_choice choice name mode workspace key
-  ui_header "New agent containers"
-  count="$(ui_input "How many containers?" "1")"
-  [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge 1 ]] || die "expected a positive number"
+  ui_header "$(t head_new_containers)"
+  count="$(ui_input "$(t prompt_count)" "1")"
+  [[ "$count" =~ ^[0-9]+$ ]] && [[ "$count" -ge 1 ]] || die_k err_positive_number
   for ((i = 1; i <= count; i++)); do
-    heading "Container ${i} of ${count}"
+    heading_k head_progress "${i}" "${count}"
     local -a items=()
     local a
     while IFS= read -r a; do
       items+=("${a} — $(agent_title_of "$a")")
     done < <(agent_names)
-    choice="$(ui_choose "Agent for container ${i}" "${items[@]}")" || die "cancelled"
+    choice="$(ui_choose "$(tf prompt_agent_for "${i}")" "${items[@]}")" || die_k cancelled
     agent_choice="${choice%% *}"
-    agent_known "$agent_choice" || die "unknown agent '${agent_choice}'"
+    agent_known "$agent_choice" || die_k err_unknown_agent "${agent_choice}"
     local suggested="${agent_choice}-box"
     [[ "$i" -gt 1 ]] && suggested="${agent_choice}-box-${i}"
-    name="$(ui_input "Container name" "$suggested")"
-    validate_name "$name" || die "invalid container name '${name}'"
-    choice="$(ui_choose "Lifecycle for ${name}" \
-      "persistent — a running system; state lives in a named volume" \
-      "ephemeral — run the agent once, the container is removed on exit")" || die "cancelled"
+    name="$(ui_input "$(t prompt_name)" "$suggested")"
+    validate_name "$name" || die_k err_invalid_name "${name}"
+    choice="$(ui_choose "$(tf prompt_lifecycle ${name})" \
+      "$(t mode_persistent_desc)" \
+      "$(t mode_ephemeral_desc)")" || die_k cancelled
     mode="${choice%% *}"
-    workspace="$(ui_input "Host directory mounted at /workspace" "$(default_workspace "$name")")"
+    workspace="$(ui_input "$(t prompt_workspace)" "$(default_workspace "$name")")"
     for key in $(agent_envs_for "$agent_choice"); do
       collect_secret "$agent_choice" "$key"
     done
     spec_add "$name" "$agent_choice" "$mode" "$workspace"
   done
-  heading "Summary"
+  heading_k head_summary
   show_specs
-  confirm "Create these containers?" || { warn "aborted"; return 0; }
+  confirm "$(tf confirm_create)" || { warn_k aborted; return 0; }
   create_specs
 }
 
@@ -684,7 +637,7 @@ do_create() {
     parse_declaration "$DECL_FILE"
   elif [[ -n "$OPT_AGENT" || -n "$OPT_NAME" || -n "$OPT_COUNT" ]]; then
     local agent="${OPT_AGENT:-dsh}" base="${OPT_NAME:-}" count="${OPT_COUNT:-1}" mode="${OPT_MODE:-persistent}" workspace=""
-    agent_known "$agent" || die "unknown agent '${agent}'"
+    agent_known "$agent" || die_k err_unknown_agent "${agent}"
     [[ -n "$base" ]] || base="${agent}-box"
     local index name
     for ((index = 1; index <= count; index++)); do
@@ -693,7 +646,7 @@ do_create() {
       else
         name="${base}"
       fi
-      validate_name "$name" || die "invalid container name '${name}'"
+      validate_name "$name" || die_k err_invalid_name "${name}"
       workspace="${OPT_WORKSPACE:-$(default_workspace "$name")}"
       spec_add "$name" "$agent" "$mode" "$workspace"
       local key
@@ -704,17 +657,17 @@ do_create() {
   elif ui_enabled; then
     wizard_create
   else
-    die "nothing to create: pass --agent NAME (and optionally --name/--count), or use --file"
+    die_k err_nothing_to_create
   fi
   if [[ "${#SPEC_NAME[@]}" -eq 0 ]]; then
-    warn "no containers were specified"
+    warn_k err_no_containers_given
     return 0
   fi
   show_specs
   if [[ "${ASSUME_YES:-0}" -eq 0 ]] && [[ -z "$DECL_FILE" ]] && ! ui_enabled; then
-    die "refusing to create without confirmation"
+    die_k err_refuse_no_confirm
   fi
-  confirm "Create these containers?" || { warn "aborted"; return 0; }
+  confirm "$(tf confirm_create)" || { warn_k aborted; return 0; }
   create_specs
   if [[ -n "$SAVE_FILE" ]]; then
     save_specs "$SAVE_FILE"
@@ -803,7 +756,7 @@ tui_home() {
       # drifted apart (a new entry added to one side only). Say so instead of
       # falling through to a silent no-op, which is indistinguishable from the
       # menu being broken.
-      *) warn "unrecognised menu selection: '${choice}' (key='${key}')" ;;
+      *) warn_k warn_menu_selection "${choice}" "${key}" ;;
     esac
     printf '\n'
   done
@@ -832,14 +785,14 @@ dispatch() {
     rollback) need_arg; cmd_rollback "${ARGS[1]}" "${OPT_TO:-}" ;;
     recover) need_arg; cmd_recover "${ARGS[1]}" ;;
     fork)
-      [[ "${#ARGS[@]}" -ge 3 ]] || die "fork needs a source and a destination: install.sh fork SRC NEW"
+      [[ "${#ARGS[@]}" -ge 3 ]] || die_k err_fork_args
       cmd_fork "${ARGS[1]}" "${ARGS[2]}" "${OPT_AGENT:-}" "${OPT_MODE:-}" "${OPT_WORKSPACE:-}" "${OPT_FROM:-}"
       ;;
     upgrade) need_arg; cmd_upgrade "${ARGS[1]}" "${UPGRADE_IMAGE:-${OPT_TO:-}}" ;;
     remove|rm) need_arg; shift_args; remove_many ;;
     doctor) cmd_doctor ;;
     help) usage ;;
-    *) die "unknown command '${cmd}' (see: install.sh --help)" ;;
+    *) die_k err_unknown_command "${cmd}" ;;
   esac
 }
 
@@ -857,15 +810,15 @@ remove_many() {
 require_engine() {
   if [[ -z "$(detect_engines)" ]]; then
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-      warn "no container engine found; --dry-run assumes podman"
+      warn_k warn_no_engine_dry
       ENGINE="podman"
       ENGINE_BIN="podman"
       return 0
     fi
-    die "neither podman nor docker is installed; install one of them first"
+    die_k need_engine
   fi
   resolve_engine "${ENGINE_REQUEST:-auto}"
-  msg "engine: ${ENGINE} ($(eng_version))"
+  msg_k engine_line "${ENGINE}" "$(eng_version)"
 }
 
 parse_args() {
@@ -909,7 +862,7 @@ parse_args() {
       --version|-V) printf '%s\n' "agent-workspace installer (image ${IMAGE:-default})"; exit 0 ;;
       --help-agents) SHOW_AGENTS=1; shift ;;
       --) shift; ARGS+=("${@}"); break ;;
-      -*) die "unknown option ${1} (see: install.sh --help)" ;;
+      -*) die_k err_unknown_option "${1}" ;;
       *) ARGS+=("${1}"); shift ;;
     esac
   done

@@ -63,19 +63,19 @@ resolve_gum() {
 ensure_gum() {
   resolve_gum && return 0
   if ! ui_enabled; then
-    warn "gum is not installed; continuing with plain prompts"
+    warn_k gum_missing
     return 1
   fi
   local answer
-  printf 'gum (charmbracelet) renders the interactive interface and is not installed.\n'
-  ui_read answer "Install it into ${HOME}/.local/bin now? [Y/n] " || answer="n"
+  msg_k gum_explain
+  ui_read answer "$(tf gum_install_prompt "${HOME}")" || answer="n"
   case "${answer:-Y}" in
-    n|N|no|NO) warn "continuing with plain prompts"; return 1 ;;
+    n|N|no|NO) warn_k gum_skipped; return 1 ;;
   esac
   if install_gum; then
     return 0
   fi
-  warn "could not install gum; continuing with plain prompts"
+  warn_k gum_install_failed
   return 1
 }
 
@@ -84,7 +84,7 @@ install_gum() {
   case "$(uname -m)" in
     x86_64|amd64) arch="x86_64" ;;
     aarch64|arm64) arch="arm64" ;;
-    *) warn "no gum build for $(uname -m)"; return 1 ;;
+    *) warn_k gum_no_build "$(uname -m)"; return 1 ;;
   esac
   tmp="$(mktemp -d)"
   local candidate
@@ -106,7 +106,7 @@ install_gum() {
   install -m 0755 "${tmp}/gum" "${HOME}/.local/bin/gum"
   rm -rf "$tmp"
   GUM_BIN="${HOME}/.local/bin/gum"
-  ok "installed gum ${GUM_VERSION} to ${HOME}/.local/bin/gum"
+  ok_k gum_installed "${GUM_VERSION}" "${HOME}"
   return 0
 }
 

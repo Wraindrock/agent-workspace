@@ -66,20 +66,27 @@ if [[ "$got" == "zh" ]]; then ok "AW_LANG_OVERRIDE overrides the locale"; else b
 
 # all_keys: every message key in the catalogue.
 #
-# Keys have to be recognised structurally, not by shape. The English arm holds
-# single-word keys (`created`, `stopped`) that look exactly like the `en)` / `zh)`
-# arm labels, so a "line that looks like a key" heuristic picks the arm labels up
-# too and then reports them as keys with no text in either language. What actually
-# separates them is position: a key is an arm inside `case "$key" in`, while the
-# language labels are arms of `case "$AW_LANG" in`. Only the inner ones are keys.
+# Keys have to be recognised structurally, not by shape, because a key and an arm
+# label can look identical: the English catalogue holds single-word keys (`pulling`,
+# `started`, `restarted`) and the language switch has single-word arms (`en)`,
+# `zh)`). Telling them apart by their text is impossible and by their "shape"
+# heuristic is how this went wrong the first time - an earlier version skipped
+# every `^[a-z]+)$` line to drop the arm labels, which silently swallowed those
+# three keys, so the completeness check never looked at them. A key that the
+# checker cannot see is a key that can go missing.
+#
+# Position is the only sound discriminator: an arm label appears directly under
+# `case "$AW_LANG" in` and is followed by another `case`, while a key appears under
+# that inner `case "$key" in`. So track the depth - enter the language switch, then
+# enter the key switch, and only collect arms seen at the inner depth.
 all_keys() {
   awk '
-    /^t\(\) \{/                        { in_t = 1; next }
-    in_t && /^}$/                      { exit }
-    in_t && /case "\$AW_LANG" in/      { in_lang = 1; next }
-    in_lang && /^[[:space:]]*\*\)/     { next }
-    in_lang && /^[[:space:]]*[a-z]+\)/ { next }
-    in_lang && /^[[:space:]]*[a-z_0-9]+\)/ {
+    /^t\(\) \{/                         { in_t = 1; next }
+    in_t && /^}$/                       { exit }
+    in_t && /case "\$AW_LANG" in/       { in_lang = 1; next }
+    in_lang && /case "\$key" in/        { in_key = 1; next }
+    in_key && /^[[:space:]]*\*\)/       { next }   # the catch-all arm
+    in_key && /^[[:space:]]*[a-zA-Z_0-9]+\)/ {
       line = $0
       gsub(/^[[:space:]]*/, "", line)
       sub(/\).*/, "", line)
@@ -99,12 +106,119 @@ while IFS= read -r key; do
 done < <(all_keys)
 [[ "$missing" -eq 0 ]] && ok "every message key is defined in both languages"
 
+# A key defined twice in the same language is worse than a missing one: `case`
+# silently takes the first arm and shadows the rest, so the catalogue reads as if
+# the later - usually newer - text is live when it is dead. shellcheck flags this
+# as SC2221/SC2222, but only where shellcheck runs; this check is engine-free and
+# always on, so a key added twice fails the suite even on a bare checkout.
+#
+# Each key must appear exactly twice in the file: once per language. Anything
+# else is either a duplicate (>2) or single-language (<2).
+dupes="$(awk '
+  /value="/ {
+    line = $0
+    gsub(/^[[:space:]]*/, "", line)
+    sub(/\).*/, "", line)
+    if (line ~ /^[a-zA-Z_][a-zA-Z_0-9]*$/) print line
+  }
+' installer/lib/i18n.sh | sort | uniq -c | awk '$1 != 2 { printf "%s(x%s) ", $2, $1 }')"
+if [[ -z "$dupes" ]]; then
+  ok "no message key is defined twice in one language"
+else
+  bad "each key must be defined exactly once per language, but found: ${dupes}"
+fi
+
 # The English catalogue is the contract: `t` must never invent text.
 if [[ -z "$(AW_LANG_OVERRIDE=en bash -c "source installer/lib/i18n.sh >/dev/null 2>&1; t no_such_key_xyz")" ]]; then
   ok "an unknown key yields nothing rather than a placeholder"
 else
   bad "an unknown key produced text"
 fi
+
+# Every user-facing message must go through the catalogue. A helper called with an
+# English literal is a message that cannot be translated, and the earlier sweep for
+# these missed install.sh entirely because it only looked at installer/lib/*.sh --
+# which is exactly why this is an assertion and not a habit. The machine-readable
+# output (the `CONTAINER=`/`NAME` declaration format) is not a message and does not
+# use these helpers, so it is out of scope here.
+unkeyed="$(grep -rnE '\b(die|warn|msg|ok|heading|report_ok|report_bad|ui_input)[[:space:]]+"[A-Za-z]' \
+  install.sh installer/lib/*.sh 2>/dev/null | grep -v '^installer/lib/i18n.sh:' || true)"
+if [[ -z "$unkeyed" ]]; then
+  ok "every user-facing message goes through the catalogue"
+else
+  bad "these messages bypass the catalogue and cannot be translated:
+${unkeyed}"
+fi
+
+# The helper sweep above only sees calls that go *through* a message helper. A bare
+# `printf` of an English sentence is the same defect and hides from it - that is how the
+# gum explanation survived the first pass. The rule is "three lower-case words in a row",
+# which is what prose looks like and what machine output does not: a format string has a
+# `%`, a command fragment has flags, and a field list is not a sentence. The three
+# exclusions are not a loophole, they are the published boundary - README.md's "Interface
+# language" names all three, and the first two print before the catalogue has even been
+# fetched, so they could not be translated if they wanted to be.
+prose="$(grep -rnE "printf +'[^']*[a-z]+ [a-z]+ [a-z]+" install.sh installer/lib/*.sh 2>/dev/null \
+  | grep -v '^installer/lib/i18n.sh:' \
+  | grep -vE 'needs bash 4\.4|fetched %d files|# name agent mode' || true)"
+if [[ -z "$prose" ]]; then
+  ok "no English prose is printed outside the catalogue"
+else
+  bad "these English sentences are printed with a bare printf:
+${prose}"
+fi
+
+# --- the --help block, whose left column is not translated -----------------
+# `usage_text` is the one message stored as a block rather than as keys, because
+# its left column is the command and flag surface itself. That column is what
+# people copy and what tests/contract.sh asserts entry by entry, so it must be
+# byte-identical in every language: only the descriptions to its right may differ.
+# If a translator ever renames a flag inside the block, this is what catches it.
+
+surface_of() { # surface_of LANG
+  # The surface is every subcommand and every flag the block mentions, including
+  # the ones only named inside a description (`add --purge-snapshots`). Comparing
+  # the sorted sets is what catches a flag renamed in one language; comparing the
+  # raw text would only catch it where the padding happens to line up.
+  AW_LANG_OVERRIDE="$1" bash -c "source installer/lib/i18n.sh >/dev/null 2>&1; usage_text" \
+    | grep -oE '(\./install\.sh [a-z|]+|--[a-z][a-z-]*)' \
+    | sort -u
+}
+
+usage_surface_diff="$(diff <(surface_of en) <(surface_of zh) || true)"
+if [[ -z "$usage_surface_diff" ]]; then
+  ok "the --help command and flag surface is identical in both languages"
+else
+  bad "the --help command/flag surface drifted between languages:
+${usage_surface_diff}"
+fi
+
+# Guard the check itself: the surface must be non-trivial, or a block that failed
+# to render would compare equal to another empty one and pass.
+if [[ "$(surface_of en | wc -l)" -ge 20 ]]; then
+  ok "the --help surface extracted from the block is non-trivial"
+else
+  bad "only $(surface_of en | wc -l) command/flag tokens found in --help; the check would be vacuous"
+fi
+
+# And the block must actually be translated, not a copy of the English one.
+usage_zh="$(AW_LANG_OVERRIDE=zh bash -c "source installer/lib/i18n.sh >/dev/null 2>&1; usage_text")"
+if [[ "$usage_zh" == *"打开交互式 TUI"* ]]; then
+  ok "the --help block is translated into Chinese"
+else
+  bad "the Chinese --help block is missing or still English"
+fi
+
+# The documented subcommands must survive translation: these are the tokens
+# tests/contract.sh pulls out of the English block.
+for token in "./install.sh create" "./install.sh rollback NAME [--to ID]" \
+  "--dry-run, -n" "--help-agents" "--purge-snapshots"; do
+  if [[ "$usage_zh" == *"$token"* ]]; then
+    ok "the Chinese --help block still documents '${token}'"
+  else
+    bad "the Chinese --help block lost '${token}'"
+  fi
+done
 
 # --- the menu dispatches on keys, not on translated text -------------------
 # This is the defect the whole key indirection exists to prevent.

@@ -23,6 +23,11 @@ export XDG_DATA_HOME="$WORK/data"
 export WORKSPACE_ROOT="$WORK/workspaces"
 export FAKE_ENGINE_STATE="$WORK/fake-state"
 export DEEPSEEK_API_KEY="sk-test-dsh-key"
+# The installer speaks the language of the host locale, so pin it: the assertions
+# below quote English sentences from --help and from the prompts, and inheriting a
+# zh_CN desktop would fail them for no reason. tests/i18n.sh is where the other
+# language is asserted.
+export AW_LANG_OVERRIDE=en
 # keep auto-assigned web ports out of the well-known range a real host may use
 export WEB_PORT_BASE=34700
 
@@ -544,6 +549,17 @@ contains "doctor reports the missing volume" "home volume" "$RUN_OUT"
 
 # =========================================================================
 echo "remove"
+
+# A destructive command with nobody to ask must refuse, and must not exit 0. The
+# prompt is read from stdin, which `run` feeds /dev/null: the read hits EOF, and
+# without this the caller would see the same status as a successful removal.
+run remove box1
+is "remove without --yes and without a tty fails" 1 "$RUN_STATUS"
+contains "remove says why it refused" "refusing to act without confirmation" "$RUN_OUT"
+exists "the refused container is still there" "$(data)/containers/box1"
+exists "the refused container keeps its volume" "$(volume_path box1)"
+lacks "a refused remove does not claim success" "removed box1" "$RUN_OUT"
+
 run remove box2 --yes
 is "remove exits 0" 0 "$RUN_STATUS"
 contains "remove reports the container" "removed box2" "$RUN_OUT"

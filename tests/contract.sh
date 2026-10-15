@@ -65,6 +65,12 @@ pass() { printf '  ok   %s\n' "$1"; assertions=$((assertions + 1)); }
 fail() { printf '  fail %s\n' "$1"; assertions=$((assertions + 1)); failures=$((failures + 1)); }
 info() { printf '  info %s\n' "$1"; }
 
+# The help text is localised, and one of its assertions below quotes the English
+# title ("agent-workspace installer"). Pin the language so the contract is the same
+# on a zh_CN desktop as on a C locale; tests/i18n.sh asserts the Chinese block and
+# the part of the surface that must not differ between languages.
+export AW_LANG_OVERRIDE=en
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
@@ -340,7 +346,81 @@ for name in ${agent_keys}; do
     || fail "agent recipe ${name} does not define install_agent()"
 done
 
-# build_files/build.sh:58 resolves a module key to a directory of the same name
+# How an agent is *started* is a contract too, and one that no source-level check
+# used to cover. `ephemeral` runs `run <image> <agent command>` and disposes of the
+# container when it exits, so an agent whose command cannot start turns ephemeral
+# mode into "create a container that dies instantly". dsh was exactly that: its
+# binary invoked bare exits 1 with `error: --profile <name> is required`, and the
+# installer handed the container nothing but the binary name.
+#
+# These assertions are source-level on purpose - they must run with no engine, no
+# image and no network. They pin the two things that were wrong:
+#   1. launch is resolved through agent_launch_command, not agent_binary_of, at
+#      every call site that starts an agent;
+#   2. the `dsh` entry names a profile the *image* ships, not one that merely
+#      exists on somebody's $DSH_HOME. The package README lists the profiles that
+#      self-initialise: web, headless, sdk, sdk-minimal, acp.
+agents_lib="installer/lib/agents.sh"
+if grep -qE '^agent_launch_command\(\) \{' "${agents_lib}"; then
+  pass "the agent catalogue resolves a launch command, not just a binary"
+else
+  fail "installer/lib/agents.sh has no agent_launch_command()"
+fi
+
+dsh_launch="$(bash -c 'source installer/lib/agents.sh; builtin_agents; agent_launch_command dsh')"
+dsh_binary="$(bash -c 'source installer/lib/agents.sh; builtin_agents; agent_binary_of dsh')"
+if [[ "${dsh_launch}" == *"--profile"* ]]; then
+  pass "dsh is launched with a profile (${dsh_launch})"
+else
+  fail "dsh is launched bare (${dsh_launch:-<empty>}); dsh exits 1 with '--profile <name> is required'"
+fi
+
+dsh_profile="${dsh_launch##*--profile }"
+dsh_profile="${dsh_profile%% *}"
+# The shipped profiles, space-padded so a membership test cannot match `sdk` inside
+# `sdk-minimal`. Kept in a variable rather than inline so shellcheck does not read
+# the word as a constant (SC2194).
+shipped_dsh_profiles=" web headless sdk sdk-minimal acp "
+if [[ "${shipped_dsh_profiles}" == *" ${dsh_profile} "* ]]; then
+  pass "the dsh profile ${dsh_profile} is one the image ships"
+else
+  fail "the dsh profile '${dsh_profile}' is not a shipped profile (web, headless, sdk, sdk-minimal, acp); a profile only present on the host's \$DSH_HOME fails with 'profile does not exist'"
+fi
+
+# ephemeral promises "answer one task and exit": a profile that does not return
+# would hold the container open forever and defeat the mode.
+if [[ "${dsh_profile}" == "headless" ]]; then
+  pass "ephemeral launches the dsh profile that answers one task and exits"
+else
+  fail "ephemeral launches the '${dsh_profile}' profile, which does not answer one task and exit"
+fi
+
+if [[ "${dsh_launch}" != "${dsh_binary}" ]]; then
+  pass "launching dsh differs from naming its binary, so the two are not interchangeable"
+else
+  fail "agent_launch_command dsh returns the bare binary"
+fi
+
+# Every call site that starts an agent has to go through the resolver; one that
+# still builds the command from the binary name reintroduces the bug for that path.
+for site in installer/lib/commands.sh install.sh; do
+  [[ -f "${site}" ]] || continue
+  start_sites="$(grep -nE 'eng_exec [^|;]*agent_binary_of|eargs\+=.*agent_binary_of' "${site}" || true)"
+  if [[ -z "${start_sites}" ]]; then
+    pass "${site} starts agents through agent_launch_command"
+  else
+    fail "${site} builds an agent command from agent_binary_of: ${start_sites}"
+  fi
+done
+
+# opencode has no profile grammar, so the resolver must still return its binary.
+opencode_launch="$(bash -c 'source installer/lib/agents.sh; builtin_agents; agent_launch_command opencode')"
+if [[ "${opencode_launch}" == "opencode" ]]; then
+  pass "an agent with no profile grammar is launched by its binary (opencode)"
+else
+  fail "opencode launch command changed unexpectedly: ${opencode_launch:-<empty>}"
+fi
+
 # and then to its MODULE_NAME, so that name is load-bearing too.
 for name in ${module_keys}; do
   module_env="build_files/modules/${name}/module.env"

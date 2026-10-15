@@ -8,6 +8,39 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 `agent-workspace` CLI. Day-to-day image builds are identified by tag
 (`YYYYMMDD`, `YYYYMMDD-<sha>`) rather than by version number.
 
+## [Unreleased]
+
+### Added
+
+- The installer speaks Simplified Chinese. Messages now come from a keyed catalogue
+  (`installer/lib/i18n.sh`) instead of English string literals, and the locale is
+  resolved as `LC_ALL` -> `LC_MESSAGES` -> `LANG`, with `AW_LANG_OVERRIDE` to force
+  one. An unsupported locale falls back to English as a whole rather than mixing
+  languages. `tests/i18n.sh` fails if any message bypasses the catalogue, if a key is
+  defined twice, or if the command and flag column of `--help` differs between the two
+  languages - a translation could otherwise rename a flag without any test noticing.
+  Four things stay English on purpose: the `bash 4.4` guard and the bootstrap's
+  "fetched N files" line (printed before the catalogue is available), the
+  `CONTAINER=`/`NAME` declaration format (machine-readable), and the `dry-run` label
+  with the engine command it prints (a copyable shell command).
+
+### Fixed
+
+- A destructive subcommand no longer reports success when it was never confirmed.
+  `remove`, `rollback` and `upgrade` read their confirmation from stdin; with no
+  terminal that read hit EOF, `confirm` returned "no", and the caller returned 0 - so
+  `install.sh remove box && ...` ran its success branch while the container was still
+  there. `confirm` now refuses outright when there is no terminal and no `--yes`,
+  which is the same rule `create` already followed, and a declined destructive command
+  exits non-zero. `tests/install.sh` asserts the exit status, the refusal message, that
+  the container and its volume are still there, and that no success was claimed.
+
+- `install.sh fork SRC DST` with only one argument died with an English message, and
+  `--file` with a missing declaration file, an unknown `--agent` in the menu, and an
+  unparsable menu key did the same. `tests/i18n.sh` now sweeps `install.sh` as well as
+  `installer/lib/*.sh` for messages that bypass the catalogue, which is how these four
+  were missed: the earlier sweep only looked at the library.
+
 ## [0.1.2] - 2026-10-15
 
 The project stops depending on the host's kernel, and starts enforcing the
