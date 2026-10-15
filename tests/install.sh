@@ -424,10 +424,40 @@ contains "pruning reports the container that runs from a snapshot" "still used b
 exists "the in-use snapshot record is kept" "$(snap_root keeper)/$KEEP_SNAP"
 exists "the in-use snapshot image is kept" "$FAKE_ENGINE_STATE/images/agent-workspace_snapshot-keeper_$KEEP_SNAP"
 is "the in-use snapshot survives the prune" 2 "$(snap_count keeper)"
-OLDEST_UNUSED="$(latest_snap keeper)"
+# Pruning keeps the newest `--keep 1` unprotected snapshots plus every protected
+# one, and deletes the excess in between. Asserting on a *named* id is what made
+# this flaky: snapshot ids are second-granular and a collision is disambiguated by
+# appending `b`, so three snapshots taken within one second sort as
+# `...Z`, `...Zb`, `...Zbb`. With `...Z` protected (both `keeper` and `keeplive`
+# run from its image) the prune deletes the middle one, and both `latest_snap` and
+# "newest unprotected" name `...Zbb` - the id the prune deliberately keeps. In CI
+# all three landed in the same second and the assertion failed while passing here.
+#
+# What is stable regardless of timing: `snapshot keeper --keep 1` creates one new
+# snapshot and then prunes down to the policy, so the survivors are the protected
+# one plus the newest; a pre-existing unprotected snapshot is what disappears, and
+# the protected record plus its image survive. Asserting on set difference keeps
+# this independent of second-granularity ids.
+BEFORE_PILE="$(snap_ids keeper)"
 run snapshot keeper --keep 1
 is "an unused older snapshot is still pruned" 2 "$(snap_count keeper)"
-missing "the unused snapshot is gone" "$(snap_root keeper)/$OLDEST_UNUSED"
+AFTER_PILE="$(snap_ids keeper)"
+if printf '%s\n' "$AFTER_PILE" | grep -qx "$KEEP_SNAP"; then
+  pass "the protected snapshot is the one that stayed"
+else
+  fail "the protected snapshot ${KEEP_SNAP} was pruned (survivors: $(printf '%s' "$AFTER_PILE" | tr '\n' ' '))"
+fi
+# the snapshot that disappeared must be one that existed before and is not protected
+DROPPED="$(comm -23 <(printf '%s\n' "$BEFORE_PILE" | sort) <(printf '%s\n' "$AFTER_PILE" | sort))"
+if [[ -z "$DROPPED" ]]; then
+  fail "the prune removed nothing, so it never exercised the excess path"
+elif [[ "$(printf '%s\n' "$DROPPED" | grep -c .)" -ne 1 ]]; then
+  fail "the prune removed more than one snapshot: $(printf '%s' "$DROPPED" | tr '\n' ' ')"
+elif [[ "$DROPPED" == "$KEEP_SNAP" ]]; then
+  fail "the prune removed the protected snapshot ${KEEP_SNAP}"
+else
+  missing "the unused snapshot is gone" "$(snap_root keeper)/$DROPPED"
+fi
 
 # an image a container this installer does not manage still runs from: the engine
 # refuses to remove it even though no state file mentions it
