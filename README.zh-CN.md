@@ -17,21 +17,47 @@
 ## 快速开始
 
 ~~~bash
-git clone https://github.com/wraindrock/agent-workspace
-cd agent-workspace
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash
 ~~~
+
+安装就这一条命令。`install.sh` 是单独一个脚本：它会自己拉取所需的库，并逐个用
+脚本内置的摘要校验，所以不需要 clone，也不会在本地留下一份需要同步的代码。拉取到
+的文件缓存在 `~/.cache/agent-workspace/bootstrap/`。
 
 TUI 会依次问你：容器里装哪个 agent、容器叫什么名字、生命周期选 **persistent**
 （systemd 常驻，home 卷跨重启保留）还是 **ephemeral**（跑完即弃）、把主机上哪个
 目录挂载到 `/workspace`，以及那个 agent 需要的凭据。之后它创建好容器，并告诉你
 怎么进去。
 
+本地没有 checkout 时，子命令也用同一条管道调用：
+
 ~~~bash
-./install.sh list              # 这台机器上已经有什么
-./install.sh enter dsh-box     # 在它自己的系统里运行 agent
-./install.sh --help            # 所有子命令，含非交互用法
+iw() { curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash -s -- "$@"; }
+iw list              # 这台机器上已经有什么
+iw enter dsh-box     # 在它自己的系统里运行 agent
+iw --help            # 所有子命令，含非交互用法
 ~~~
+
+`main` 是已审核代码的落点，`dev` 更早拿到改动，两者都能装，校验方式完全相同：
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/dev/install.sh \
+  | AW_INSTALL_REF=dev bash
+~~~
+
+脚本与 `AW_INSTALL_REF` 要用同一个 ref。每个分支的 `install.sh` 只带自己分支的摘要，
+所以让 `main` 的脚本去拉 `dev` 的文件会被拒绝，而不是悄悄混用两棵树——这个拒绝
+就是校验在起作用，也正是它挡住了「镜像站给你换了别的代码」。
+
+如果你更想先读代码再运行，那就改成 clone：checkout 会被直接使用，安装器本身完全
+不需要网络。
+
+~~~bash
+git clone https://github.com/wraindrock/agent-workspace
+cd agent-workspace
+./install.sh
+~~~
+
 
 **使用**本项目只需要这个脚本，仓库其余部分是给你构建自己的镜像用的。容器完整
 参考：[docs/containers.md](docs/containers.md)。

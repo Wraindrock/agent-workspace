@@ -1,9 +1,20 @@
 # ---------------------------------------------------------------------------
 # Build, self-test and publish the agent-workspace image.
 #
-#   pull request -> lint + build + container self test (never pushes)
-#   push to main -> the above, then push and cosign-sign the image
-#   nightly      -> rebuild against the freshest base image
+#   pull request   -> lint + build + container self test (never pushes)
+#   push to main   -> the above, then push and cosign-sign the image
+#   push to dev    -> the above, but NEVER pushes an image (see below)
+#   nightly        -> rebuild against the freshest base image
+#
+# main is not "stable" and dev is not "unstable" in any semver sense: both are
+# moving branches, and dev is simply where work lands before it is reviewed onto
+# main. The one thing that must not drift is which branch owns the published
+# tags - `latest` and `previous` are mutable pointers that users pull, so only
+# main may write them. Publishing from dev would silently replace the image a
+# user's next `install.sh upgrade` picks up, which is exactly the "never
+# overwrite a published tag" rule this project holds itself to. Every publish
+# step below is therefore gated on `github.ref == 'refs/heads/main'` rather than
+# on `event_name != 'pull_request'`, which was true for *any* branch push.
 #
 # The same steps are available locally as `just check`, `just build` and
 # `just smoke`; this workflow deliberately uses plain podman so that CI has
@@ -15,9 +26,11 @@ on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
+      - dev
   schedule:
     # rebuild every night so the image tracks security fixes in the base image
     - cron: "0 4 * * *"
@@ -188,11 +201,19 @@ jobs:
       - name: firstboot provisioning contract
         run: bash tests/firstboot.sh
 
+      # install.sh is the documented install path, and `curl | bash` gives it no
+      # checkout to fall back on: it downloads installer/lib/* and image.env and
+      # checks them against digests carried inside the script itself. This asserts
+      # the stamp still matches the tree and that a file whose bytes do not match
+      # is refused rather than warned about. No engine, no network.
+      - name: curl | bash bootstrap contract
+        run: bash tests/bootstrap.sh
+
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
       # ------------------------------------------------------------------
       - name: Log in to the container registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           # Podman push/pull below pass --authfile explicitly, so the credentials never
           # depend on where the default credential store happens to live.
@@ -214,7 +235,7 @@ jobs:
             podman login "${registry_host}" -u "${{ github.actor }}" --password-stdin
 
       - name: Preserve the currently published image as :previous
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -231,7 +252,7 @@ jobs:
           fi
 
       - name: Tag this build
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
@@ -257,7 +278,7 @@ jobs:
           cat "$RUNNER_TEMP/tags.txt"
 
       - name: Push
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           AUTHFILE: ${{ runner.temp }}/auth.json
@@ -285,7 +306,7 @@ jobs:
           done < "$RUNNER_TEMP/tags.txt"
 
       - name: Resolve the published digest
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         id: published
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
@@ -319,14 +340,14 @@ jobs:
           fi
 
       - name: Install cosign
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: sigstore/cosign-installer@v3
         with:
           # pinned: the legacy sha256-<digest>.sig layout below is what cosign 2.x writes
           cosign-release: v2.5.2
 
       - name: Sign the published image
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           DIGEST: ${{ steps.published.outputs.digest }}
@@ -346,7 +367,7 @@ jobs:
           fi
 
       - name: Verify the published signature
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           DIGEST: ${{ steps.published.outputs.digest }}

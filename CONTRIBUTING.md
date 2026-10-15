@@ -33,6 +33,24 @@ podman build -t localhost/agent-workspace:dev .
 bash tests/smoke.sh localhost/agent-workspace:dev
 ~~~
 
+### Editing the installer: re-stamp it
+
+`install.sh` is also the `curl | bash` entry point, so it carries the SHA-256 of every
+file it downloads at runtime (`installer/lib/*`, `image.env`). A checkout has no fetch
+step, so a stale stamp does not break your own runs - it breaks the piped install, which
+is the documented one. After touching those files:
+
+~~~bash
+just stamp        # rewrite the digests inside install.sh
+just stamp-check  # verify without rewriting
+~~~
+
+`just check`, `tests/bootstrap.sh` and CI all fail on a stale stamp, and
+`tests/bootstrap.sh` additionally drives the real fetch to prove a mismatched file is
+refused rather than warned about. Commit the re-stamp together with the change that
+caused it.
+
+
 `tests/lint.sh` is the same check CI runs on every pull request, and it degrades
 gracefully: `shellcheck`, `actionlint`, `just` and `pyyaml` are used when
 present, skipped when not. Documentation counts as part of a change: the lint

@@ -23,20 +23,48 @@ ghcr.io/wraindrock/agent-workspace:latest
 ## Quick start
 
 ~~~bash
-git clone https://github.com/wraindrock/agent-workspace
-cd agent-workspace
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash
 ~~~
+
+That is the whole install. `install.sh` is one script: it fetches the libraries it needs
+and checks each against a digest carried inside itself, so there is nothing to clone and
+nothing left behind to keep in sync. The fetched files land in
+`~/.cache/agent-workspace/bootstrap/`.
 
 The TUI asks which agent goes into the container, what to call it, whether it should be
 **persistent** (systemd, keeps its home volume across restarts) or **ephemeral** (run
 once, then gone), which host directory to mount at `/workspace`, and once for the
 credential that agent needs. Then it creates the container and tells you how to enter it.
 
+With no checkout on disk, run the subcommands through the same pipe:
+
 ~~~bash
-./install.sh list              # what this host already has
-./install.sh enter dsh-box     # run the agent inside its own OS
-./install.sh --help            # every subcommand, including non-interactive use
+iw() { curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash -s -- "$@"; }
+iw list              # what this host already has
+iw enter dsh-box     # run the agent inside its own OS
+iw --help            # every subcommand, including non-interactive use
+~~~
+
+`main` is where reviewed work lands; `dev` receives it first. Both are served, and the
+script verifies whichever you pick the same way:
+
+~~~bash
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/dev/install.sh \
+  | AW_INSTALL_REF=dev bash
+~~~
+
+Use the same ref for the script and for `AW_INSTALL_REF`. Each branch's `install.sh`
+carries the digests of *its own* branch, so asking a `main` script to fetch `dev` files
+makes it refuse them instead of silently mixing trees - that refusal is the check working,
+and it is what stops a mirror from handing you different code than the script expects.
+
+If you would rather read the code before running it, clone the repository instead: a
+checkout is used as-is and needs no network at all.
+
+~~~bash
+git clone https://github.com/wraindrock/agent-workspace
+cd agent-workspace
+./install.sh
 ~~~
 
 Nothing else in this repository is needed to *use* the project. The rest of this README

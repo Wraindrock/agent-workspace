@@ -23,6 +23,20 @@ default:
 check:
     bash tests/lint.sh
 
+# Re-stamp the bootstrap checksums inside install.sh after editing
+# installer/lib/*.sh or image.env. `curl | bash` installs without a checkout, so
+# install.sh carries the digests of the files it fetches; a stale stamp means the
+# bootstrap would refuse the very files it was built from. `just check` fails
+# when this is out of date, so run it as part of the same commit.
+[group('Lint')]
+stamp:
+    bash scripts/stamp-install.sh
+
+# Verify the stamp without rewriting it.
+[group('Lint')]
+stamp-check:
+    bash scripts/stamp-install.sh --check
+
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
@@ -98,6 +112,14 @@ contract:
 firstboot:
     bash tests/firstboot.sh
 
+# The curl|bash install path: install.sh fetches its own libraries and verifies
+# them against digests carried inside the script. Drives the real bootstrap_fetch
+# (via its download seam, so no network) and asserts a mismatched file is
+# refused rather than warned about. Engine-free and network-free.
+[group('Lint')]
+bootstrap:
+    bash tests/bootstrap.sh
+
 # Re-run every container-level test against an image that is already built,
 # plus the engine-free decoupling assertions.
 [group('Build')]
@@ -113,10 +135,14 @@ containers-full $target_image=image_name $tag=default_tag: (containers-all targe
 # has been built.
 [group('Lint')]
 static: (decoupling) && (contract)
-# The engine-free suite plus the firstboot contract. Separate from `static` for
-# the usual one-`&&`-per-recipe reason; `verify-all` is what runs everything.
+# The engine-free suite plus the firstboot and bootstrap contracts. `just` allows
+# one `&&` chain per recipe, so the middle name carries the third dependency for
+# the same reason `static` exists at all; `verify-all` is what runs everything.
 [group('Lint')]
-static-all: (static) && (firstboot)
+static-more: (firstboot) && (bootstrap)
+# The engine-free suite plus the firstboot and bootstrap contracts.
+[group('Lint')]
+static-all: (static) && (static-more)
 
 # verify: requires a built image. Rebuilds it first, then re-runs every test that
 # exercises it. Depends on `containers-full`, not `containers`: `just` allows only

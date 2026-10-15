@@ -1,17 +1,65 @@
 # Containers on your host
 
-This project has exactly one supported way to be used: you run `./install.sh` on a
+This project has exactly one supported way to be used: you run `install.sh` on a
 Linux machine, it walks you through a TUI, and it creates containers on that machine.
 Each container is a complete operating system with a pre-configured agent inside it,
 isolated from your workstation and from every other container.
 
 ```bash
-git clone https://github.com/wraindrock/agent-workspace && cd agent-workspace
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/install.sh | bash
 ```
+
+There is no clone step: the script fetches the libraries it needs and verifies each one
+against a digest carried inside itself (see [Install methods](#install-methods) below).
 
 The installer is the whole interface: creating, entering, snapshotting, rolling back,
 recovering, forking, upgrading and removing containers. It never needs root.
+
+## Install methods
+
+`install.sh` works the same three ways, and only the first is the documented default:
+
+| How | Command | Notes |
+| --- | --- | --- |
+| Piped, no checkout | `curl -fsSL .../main/install.sh \| bash` | The supported install. Fetched files are cached under `~/.cache/agent-workspace/bootstrap/`. |
+| Checkout | `git clone ... && cd agent-workspace && ./install.sh` | Used as-is; the installer itself needs no network. |
+| Off a branch | `curl .../dev/install.sh \| AW_INSTALL_REF=dev bash` | `dev` receives work before `main`. |
+
+Nothing is installed system-wide and nothing needs root: the installer is a script, and
+everything it creates lives under your home directory (`~/.local/share/agent-workspace`
+for container state, `~/.config/agent-workspace` for configuration).
+
+### Why the digests, and what a refusal means
+
+A piped install has no repository to compare against, so `install.sh` carries the SHA-256
+of every file it downloads and refuses anything that does not match:
+
+```text
+checksum mismatch for installer/lib/commands.sh from ref 'main':
+expected <digest>, got <digest>. Refusing this file; nothing was installed from it.
+```
+
+That message means the bytes served were not the bytes this script was built from. It is
+not a warning and there is no override flag: the offending file is never written, and
+re-running fails the same way until the mirror and the script agree again. Files fetched
+*before* the bad one have already been verified and cached - they are the ones the script
+expects, so the installer is never left running half of one tree and half of another. Two
+causes are worth telling apart:
+
+* **You mixed refs** - a `main` script asked to fetch `dev` files (or the reverse). Each
+  branch stamps its own digests, so this is a refusal by design, not a bug. Use one ref
+  for both the URL and `AW_INSTALL_REF`.
+* **A stale stamp** - you are running a script that does not match the files it fetches.
+  On a checkout this cannot happen (a checkout is used as-is, with no fetch at all). If
+  you hit it while *developing*, you edited `installer/lib/*` or `image.env` without
+  re-stamping: run `just stamp`. `just check` and CI both fail on a stale stamp, so a
+  release cannot ship this way.
+
+Environment variables on the piped path: `AW_INSTALL_REF` (branch to fetch; default
+`main`) and `AW_INSTALL_BASE_URL` (URL prefix, for a mirror). `AW_BOOTSTRAP_DOWNLOAD` is a
+**test seam**, not a feature - it replaces the downloader so `tests/bootstrap.sh` can
+assert that a mismatched file is refused without a network. Leave it unset.
+
 
 ## Requirements
 

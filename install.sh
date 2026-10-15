@@ -19,6 +19,168 @@ if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]] || { [[ "${BASH_VERSINFO[0]}" -eq 4 ]] &
 fi
 
 INSTALLER_HOME="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Bootstrap: run from anywhere.
+#
+# `curl -fsSL .../install.sh | bash` is the documented way to install, and it
+# leaves no checkout behind - so the library files this script sources have to
+# be fetched. Three decisions are worth stating, because the obvious versions of
+# each are wrong:
+#
+#   * The checksums live *in this script*, not in a file downloaded next to it.
+#     A manifest fetched over the same channel from the same ref proves the
+#     transfer was intact and nothing more: whoever could alter one response
+#     could alter the other. Anchoring the digests in the script the user chose
+#     to run is what makes the check mean something.
+#   * The ref is a moving branch (`main` by default, `dev` on request), so the
+#     digests are re-stamped on every push by `just stamp`, and `tests/lint.sh`
+#     fails when they drift from the files beside them. A stale stamp is the
+#     failure mode that would otherwise silently send users a mismatched set.
+#   * A checksum mismatch is fatal. There is deliberately no "continue anyway"
+#     path, and the partial download is removed, so a compromised mirror cannot
+#     turn a detected mismatch into a silent install.
+#
+# An existing checkout keeps working with no network at all: the files are
+# simply there, and are used as-is.
+# ---------------------------------------------------------------------------
+INSTALL_REF_DEFAULT="main"
+INSTALL_REF="${AW_INSTALL_REF:-$INSTALL_REF_DEFAULT}"
+INSTALL_REPO="${AW_INSTALL_REPO:-Wraindrock/agent-workspace}"
+INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INSTALL_REPO}}"
+
+# sha256 of every file the bootstrap fetches, for ref `main` and ref `dev`.
+# Regenerate with `just stamp` after touching installer/lib/* or image.env.
+# shellcheck disable=SC2034  # read via the nameref in verify_checksum
+declare -A BOOTSTRAP_SHA256_MAIN=(
+  [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
+  [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
+  [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
+  [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
+  [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
+  [installer/lib/ui.sh]="0d535340f9d8aabeeb3a208bc33972e1ef33c2bdeaa695109a1c4e973d075a59"
+)
+declare -A BOOTSTRAP_SHA256_DEV=(
+  [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
+  [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
+  [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
+  [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
+  [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
+  [installer/lib/ui.sh]="0d535340f9d8aabeeb3a208bc33972e1ef33c2bdeaa695109a1c4e973d075a59"
+)
+BOOTSTRAP_FILES=(
+  image.env
+  installer/lib/agents.sh
+  installer/lib/commands.sh
+  installer/lib/engine.sh
+  installer/lib/state.sh
+  installer/lib/ui.sh
+)
+
+bootstrap_die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
+
+bootstrap_expected_sha() {
+  local file="$1" ref="$2"
+  case "$ref" in
+    main) printf '%s' "${BOOTSTRAP_SHA256_MAIN[${file}]:-}" ;;
+    dev) printf '%s' "${BOOTSTRAP_SHA256_DEV[${file}]:-}" ;;
+    *) printf '' ;;
+  esac
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    bootstrap_die "need sha256sum or shasum to verify the downloaded files"
+  fi
+}
+
+bootstrap_dir() {
+  # Per-ref so that a `dev` run never leaves files that a later `main` run would
+  # pick up, and so that switching refs re-downloads instead of mixing trees.
+  printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/agent-workspace/bootstrap/${INSTALL_REF}"
+}
+
+# Everything the bootstrap needs is present next to this script.
+bootstrap_is_checkout() {
+  local file
+  for file in "${BOOTSTRAP_FILES[@]}"; do
+    [[ -f "${INSTALLER_HOME}/${file}" ]] || return 1
+  done
+  return 0
+}
+
+bootstrap_fetch() {
+  local file="$1" url expected actual out part
+  url="${INSTALL_BASE_URL}/${INSTALL_REF}/${file}"
+  expected="$(bootstrap_expected_sha "$file" "$INSTALL_REF")"
+
+  if [[ -z "$expected" || "$expected" == "__PENDING__" ]]; then
+    bootstrap_die "no recorded checksum for ${file} at ref '${INSTALL_REF}'. This build of install.sh was not stamped; use a checkout, or set AW_INSTALL_REF to a ref this script knows (main, dev)."
+  fi
+
+  out="${cache}/${file}"
+  part="${out}.part.$$"
+  mkdir -p "$(dirname "$out")"
+
+  # AW_BOOTSTRAP_DOWNLOAD is a test seam, not a feature. `tests/bootstrap.sh`
+  # has to prove that *this* function - not a re-implementation of it - refuses
+  # a file whose bytes do not match its digest; without a way to serve bytes
+  # without a network that assertion could only test a hand-written stand-in,
+  # which stays green even when the real check is downgraded to a warning. It
+  # defaults to curl over HTTPS, so production behaviour is unchanged.
+  local -a download=(curl -fsSL --proto '=https' --tlsv1.2 -o "$part" "$url")
+  if [[ -n "${AW_BOOTSTRAP_DOWNLOAD:-}" ]]; then
+    download=("${AW_BOOTSTRAP_DOWNLOAD}" -o "$part" "$url")
+  elif ! command -v curl >/dev/null 2>&1; then
+    bootstrap_die "curl is required to install without a checkout (or clone the repository and run ./install.sh)"
+  fi
+  if ! "${download[@]}"; then
+    rm -f "$part"
+    bootstrap_die "could not download ${url}"
+  fi
+
+  actual="$(sha256_of "$part")"
+  if [[ "$actual" != "$expected" ]]; then
+    rm -f "$part"
+    # Say only what is true. The bootstrap fetches files in a fixed order and
+    # commits each one as it verifies, so a mismatch on the Nth file means the
+    # earlier N-1 are already in the cache - they verified, but a caller that
+    # went on to use this directory would find a half-populated tree. The
+    # installer never does that: it aborts here, and the cache is only read
+    # after every file has been fetched. Stating "nothing was installed" would
+    # be a stronger promise than this function can keep.
+    bootstrap_die "checksum mismatch for ${file} from ref '${INSTALL_REF}': expected ${expected}, got ${actual}. Refusing this file; nothing was installed from it."
+  fi
+  mv -f "$part" "$out"
+}
+
+bootstrap_installer() {
+  # A checkout is authoritative and needs no network.
+  if bootstrap_is_checkout; then
+    return 0
+  fi
+
+  cache="$(bootstrap_dir)"
+  local file
+  # Re-verify every run rather than trusting a warm cache: the files are read by
+  # a shell, so a cached file that was tampered with after the fact is exactly
+  # the case that matters.
+  for file in "${BOOTSTRAP_FILES[@]}"; do
+    bootstrap_fetch "$file"
+  done
+
+  printf 'install.sh: fetched %d files for ref %s into %s\n' \
+    "${#BOOTSTRAP_FILES[@]}" "$INSTALL_REF" "$cache" >&2
+  INSTALLER_HOME="$cache"
+}
+
+cache=""
+bootstrap_installer
+
 # shellcheck source=installer/lib/engine.sh
 source "${INSTALLER_HOME}/installer/lib/engine.sh"
 # shellcheck source=installer/lib/state.sh

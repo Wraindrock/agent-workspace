@@ -227,13 +227,28 @@ echo "ci coverage"
 # it here: a script CI silently stops running has to fail the lint instead of
 # quietly drifting away from the documentation. Adding a test means adding it to
 # this list *and* to build.yml, in the same change.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh; do
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else
     fail "build.yml does not run ${script}"
   fi
 done
+
+echo "bootstrap stamp"
+# install.sh is fetched on its own by `curl | bash`, so it carries the digests of
+# the files it downloads. Editing installer/lib/* or image.env without re-stamping
+# would ship a script that rejects its own files - and the failure would only be
+# visible to a user running the documented install command, never in our tests.
+if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+  if bash scripts/stamp-install.sh --check >/dev/null 2>&1; then
+    pass "install.sh bootstrap checksums match the tree"
+  else
+    fail "install.sh bootstrap checksums are stale (run: just stamp)"
+  fi
+else
+  pass "skipped install.sh bootstrap stamp (no sha256sum or shasum)"
+fi
 
 echo "test hygiene"
 # `install.sh create` records the container under $DATA_HOME and skips a name
