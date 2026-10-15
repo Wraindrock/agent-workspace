@@ -112,10 +112,15 @@ run() { run_installer "$PATH" "$@"; }
 # stays offline.
 run_piped_installer() { # run_piped_installer PATH [args...]
   local path="$1"; shift
+  # AW_BOOTSTRAP_FROM_CHECKOUT points the bootstrap at the checkout under test. The
+  # install.sh on stdin is the local one, but its checksums are stamped for the
+  # *published* ref, so the uncommitted files under test are not there yet - and a
+  # real download would silently test the published copy instead of the working
+  # tree. Passing a file:// base makes the piped path exercise this repository.
   RUN_OUT="$(env PATH="$path" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
     XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
     FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-    WEB_PORT_BASE="$WEB_PORT_BASE" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" AW_BOOTSTRAP_FROM_CHECKOUT="$ROOT" \
     bash -s -- "$@" <"$INSTALLER" 2>&1)"
   RUN_STATUS=$?
 }

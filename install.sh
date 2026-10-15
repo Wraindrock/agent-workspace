@@ -27,9 +27,44 @@ fi
 # current directory would let a stray `installer/` tree in $PWD silently satisfy
 # it and then source files this run never verified.
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+PIPED=0
+if [[ -z "$SCRIPT_PATH" ]]; then
+  PIPED=1
+fi
 INSTALLER_HOME=""
 if [[ -n "$SCRIPT_PATH" ]]; then
   INSTALLER_HOME="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
+fi
+
+# Give the prompts back their keyboard when the script arrived on stdin.
+#
+# This is what lets the documented one-liner `curl ... | bash` be the *whole*
+# install rather than a second-class path. `bash` reads the script from fd 0, so
+# every later `read` would consume script text instead of keystrokes and the TUI
+# could never start.
+#
+# The terminal is reopened on fd 9, NOT on fd 0. `exec </dev/tty` looks like the
+# obvious move and is wrong: fd 0 *is* where bash is still reading this script
+# from, so replacing it truncates the run at that line - the rest of install.sh
+# silently never executes. Verified on a pty: with `exec </dev/tty` the script
+# printed its first marker and stopped. Opening fd 9 leaves the pipe intact, so
+# the script keeps loading while prompts read from TTY_FD.
+#
+# No terminal at all (CI, `ssh host 'curl ... | bash'`, cron) fails harmlessly:
+# TTY_FD stays closed, prompts keep using ordinary stdin, and the installer runs
+# non-interactively instead of blocking on a question nobody can answer.
+TTY_FD=""
+if [[ "$PIPED" -eq 1 ]] && [[ -z "${AW_NO_TTY_REATTACH:-}" ]] && [[ -r /dev/tty ]]; then
+  # `-r` only says the permission bits allow reading. When there is no controlling
+  # terminal the device node exists but opening it fails with ENXIO ("No such
+  # device or address"), and `exec` reports that on stderr *before* the redirection
+  # in the same command takes effect - so redirecting the `exec` itself is too late
+  # and the error leaks into the user's output. Open it in a subshell first, where
+  # the message can be thrown away safely, and only then inherit it for real.
+  if ( : < /dev/tty ) 2>/dev/null; then
+    exec 9</dev/tty
+    TTY_FD=9
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -69,22 +104,25 @@ declare -A BOOTSTRAP_SHA256_MAIN=(
   [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
   [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
   [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
+  [installer/lib/i18n.sh]="5a640afcf9a42d1075564b1be2a471df84bba55e2ba5cc84313a819fdd095d3a"
   [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
-  [installer/lib/ui.sh]="0d535340f9d8aabeeb3a208bc33972e1ef33c2bdeaa695109a1c4e973d075a59"
+  [installer/lib/ui.sh]="efc8792c727480927cac46ab7cebff15f3d6b1a30d19eb4a46293cce6fcc9245"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="fbf689436cf835020a5bf32f718eefccf4e2b265217660d24b770c5fc1a40558"
   [installer/lib/commands.sh]="d3435c6637c52cf2dc938250a297d3a0d95c80bf9b2c06f3a6cc2dc5bf9d2e94"
   [installer/lib/engine.sh]="931c65527dbec78a29d45f56ced423929d5b2c872a164126a434266e6e052322"
+  [installer/lib/i18n.sh]="5a640afcf9a42d1075564b1be2a471df84bba55e2ba5cc84313a819fdd095d3a"
   [installer/lib/state.sh]="1216dc9a18c954977ba276a56c5fdee5ce01db96ed9bda8cfb95bae7882a8bb5"
-  [installer/lib/ui.sh]="0d535340f9d8aabeeb3a208bc33972e1ef33c2bdeaa695109a1c4e973d075a59"
+  [installer/lib/ui.sh]="efc8792c727480927cac46ab7cebff15f3d6b1a30d19eb4a46293cce6fcc9245"
 )
 BOOTSTRAP_FILES=(
   image.env
   installer/lib/agents.sh
   installer/lib/commands.sh
   installer/lib/engine.sh
+  installer/lib/i18n.sh
   installer/lib/state.sh
   installer/lib/ui.sh
 )
@@ -171,6 +209,19 @@ bootstrap_fetch() {
 }
 
 bootstrap_installer() {
+  # AW_BOOTSTRAP_FROM_CHECKOUT is a test seam, not a feature. When install.sh is
+  # piped there is no script path, so `bootstrap_is_checkout` can never match and
+  # every run would reach the network - which would make the piped tests verify the
+  # *published* files rather than the working tree under test. Pointing
+  # INSTALLER_HOME at a checkout here lets those tests drive the real bootstrap
+  # path (including the checksum check) against the code being edited. It is
+  # deliberately a path to a directory that already holds the files: an unset value
+  # changes nothing for real users.
+  if [[ -n "${AW_BOOTSTRAP_FROM_CHECKOUT:-}" ]]; then
+    INSTALLER_HOME="${AW_BOOTSTRAP_FROM_CHECKOUT}"
+    return 0
+  fi
+
   # A checkout is authoritative and needs no network.
   if bootstrap_is_checkout; then
     return 0
@@ -193,6 +244,8 @@ bootstrap_installer() {
 cache=""
 bootstrap_installer
 
+# shellcheck source=installer/lib/i18n.sh
+source "${INSTALLER_HOME}/installer/lib/i18n.sh"
 # shellcheck source=installer/lib/engine.sh
 source "${INSTALLER_HOME}/installer/lib/engine.sh"
 # shellcheck source=installer/lib/state.sh
@@ -259,14 +312,71 @@ SPEC_MODE=()
 SPEC_WORKSPACE=()
 declare -A SECRETS=()
 
+# Colour is decided by what the terminal can actually do, not by a fixed palette:
+# a real colour terminal gets 24-bit escapes, a 16-colour one gets the basic ones,
+# and anything else (dumb terminal, NO_COLOR, not a terminal) gets none. Nothing
+# below has to care which happened - the variables are always defined, and empty
+# means "print no escape at all" rather than "print an escape that does nothing",
+# so output redirected to a file stays byte-for-byte plain.
+COLOR_MODE=none
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
-  BOLD=$'\033[1m'
-  RED=$'\033[31m'
-  GREEN=$'\033[32m'
-  YELLOW=$'\033[33m'
-  RESET=$'\033[0m'
-else
+  case "${COLORTERM:-}" in
+    truecolor|24bit) COLOR_MODE=truecolor ;;
+    *)
+      # `tput` is not in POSIX and may be missing entirely, may print an empty
+      # string, or may fail with TERM unset. Anything that is not a number we can
+      # read must land on the conservative branch, so validate the shape before
+      # comparing instead of trusting the exit status.
+      colors=""
+      if command -v tput >/dev/null 2>&1; then
+        colors="$(tput colors 2>/dev/null)" || colors=""
+      fi
+      if [[ "$colors" =~ ^[0-9]+$ ]] && [[ "$colors" -ge 256 ]]; then
+        COLOR_MODE=256
+      else
+        COLOR_MODE=basic
+      fi
+      ;;
+  esac
+fi
+
+# colour NORMAL: map a semantic colour name onto this terminal's capability.
+colour() {
+  case "$COLOR_MODE" in
+    truecolor|256)
+      # 256-colour codes; the two settings agree on the ramp we use.
+      case "$1" in
+        accent)  printf '\033[38;5;212m' ;;
+        dim)     printf '\033[38;5;240m' ;;
+        error)   printf '\033[38;5;203m' ;;
+        ok)      printf '\033[38;5;114m' ;;
+        warn)    printf '\033[38;5;179m' ;;
+      esac
+      ;;
+    basic)
+      case "$1" in
+        accent)  printf '\033[35m' ;;
+        dim)     printf '\033[90m' ;;
+        error)   printf '\033[31m' ;;
+        ok)      printf '\033[32m' ;;
+        warn)    printf '\033[33m' ;;
+      esac
+      ;;
+    *) printf '' ;;
+  esac
+}
+
+if [[ "$COLOR_MODE" == "none" ]]; then
   BOLD=""; RED=""; GREEN=""; YELLOW=""; RESET=""
+  DIM=""; ACCENT=""
+else
+  BOLD=$'\033[1m'
+  RED="$(colour error)"
+  GREEN="$(colour ok)"
+  YELLOW="$(colour warn)"
+  DIM="$(colour dim)"
+  ACCENT="$(colour accent)"
+  RESET=$'\033[0m'
 fi
 
 # --- output ----------------------------------------------------------------
@@ -614,73 +724,86 @@ do_create() {
 
 # --- TUI -------------------------------------------------------------------
 
+# pick_container: choose one existing container, or fail when there are none.
 pick_container() {
   local header="${1}" names=() line
   while IFS= read -r line; do
     [[ -n "$line" ]] && names+=("$line")
   done < <(state_list)
   if [[ "${#names[@]}" -eq 0 ]]; then
-    warn "no containers yet — create one first"
+    warn "$(t no_containers)"
     return 1
   fi
   ui_choose "$header" "${names[@]}"
 }
 
+# tui_menu returns `KEY<TAB>label` lines. The key is what the case below matches
+# on, so menu text can be translated, reworded or reordered without touching the
+# dispatch. Matching the visible label - which is what this used to do - means a
+# translation silently turns every entry into a no-op.
+tui_menu() {
+  local key
+  for key in create list enter shell web logs restart stop snapshot snapshots \
+             rollback recover fork upgrade doctor remove quit; do
+    printf 'menu_%s\t%s\n' "$key" "$(t "menu_${key}")"
+  done
+}
+
 tui_home() {
-  local choice name target
+  local choice key label name target labels=() keys=()
   while true; do
-    choice="$(ui_choose "agent-workspace — containers for coding agents" \
-      "Create a container" \
-      "List containers" \
-      "Enter a container (run its agent)" \
-      "Open a shell in a container" \
-      "Open the agent's web UI" \
-      "Show the log of a container" \
-      "Start / restart a container" \
-      "Stop a container" \
-      "Snapshot a container" \
-      "List snapshots" \
-      "Roll a container back" \
-      "Recover a container" \
-      "Fork a container" \
-      "Upgrade a container to a newer image" \
-      "Run the doctor" \
-      "Remove a container" \
-      "Quit")" || return 0
-    case "$choice" in
-      "Create a container") do_create ;;
-      "List containers") cmd_list ;;
-      "Enter a container (run its agent)") name="$(pick_container "Which container?")" && cmd_enter "$name" ;;
-      "Open a shell in a container") name="$(pick_container "Which container?")" && cmd_enter "$name" /bin/bash --login ;;
-      "Open the agent's web UI") name="$(pick_container "Which container?")" && cmd_web "$name" ;;
-      "Show the log of a container") name="$(pick_container "Which container?")" && cmd_logs "$name" ;;
-      "Start / restart a container") name="$(pick_container "Which container?")" && cmd_restart "$name" ;;
-      "Stop a container") name="$(pick_container "Which container?")" && cmd_stop "$name" ;;
-      "Snapshot a container")
-        name="$(pick_container "Which container?")" || continue
-        target="$(ui_input "Label for this snapshot" "manual")"
+    labels=(); keys=()
+    while IFS=$'\t' read -r key label; do
+      keys+=("$key"); labels+=("$label")
+    done < <(tui_menu)
+    choice="$(ui_choose "$(t tui_title)" "${labels[@]}")" || return 0
+
+    # map the chosen label back to its key
+    key=""
+    local i
+    for i in "${!labels[@]}"; do
+      if [[ "${labels[$i]}" == "$choice" ]]; then key="${keys[$i]}"; break; fi
+    done
+
+    case "$key" in
+      menu_create) do_create ;;
+      menu_list) cmd_list ;;
+      menu_enter) name="$(pick_container "$(t prompt_which)")" && cmd_enter "$name" ;;
+      menu_shell) name="$(pick_container "$(t prompt_which)")" && cmd_enter "$name" /bin/bash --login ;;
+      menu_web) name="$(pick_container "$(t prompt_which)")" && cmd_web "$name" ;;
+      menu_logs) name="$(pick_container "$(t prompt_which)")" && cmd_logs "$name" ;;
+      menu_restart) name="$(pick_container "$(t prompt_which)")" && cmd_restart "$name" ;;
+      menu_stop) name="$(pick_container "$(t prompt_which)")" && cmd_stop "$name" ;;
+      menu_snapshot)
+        name="$(pick_container "$(t prompt_which)")" || continue
+        target="$(ui_input "$(t prompt_label)" "manual")"
         cmd_snapshot "$name" "${target:-manual}"
         ;;
-      "List snapshots") name="$(pick_container "Which container?")" && cmd_snapshots "$name" ;;
-      "Roll a container back")
-        name="$(pick_container "Which container?")" || continue
-        target="$(ui_input "Snapshot id (enter to use the latest)" "")"
+      menu_snapshots) name="$(pick_container "$(t prompt_which)")" && cmd_snapshots "$name" ;;
+      menu_rollback)
+        name="$(pick_container "$(t prompt_which)")" || continue
+        target="$(ui_input "$(t prompt_snapshot_id)" "")"
         cmd_rollback "$name" "$target"
         ;;
-      "Recover a container") name="$(pick_container "Which container?")" && cmd_recover "$name" ;;
-      "Fork a container")
-        name="$(pick_container "Fork which container?")" || continue
-        target="$(ui_input "Name for the new container" "${name}-fork")"
+      menu_recover) name="$(pick_container "$(t prompt_which)")" && cmd_recover "$name" ;;
+      menu_fork)
+        name="$(pick_container "$(t prompt_fork_which)")" || continue
+        target="$(ui_input "$(t prompt_new_name)" "${name}-fork")"
         cmd_fork "$name" "$target" "" "" "" ""
         ;;
-      "Upgrade a container to a newer image")
-        name="$(pick_container "Which container?")" || continue
-        target="$(ui_input "Image" "$(state_get "$name" IMAGE)")"
+      menu_upgrade)
+        name="$(pick_container "$(t prompt_which)")" || continue
+        target="$(ui_input "$(t prompt_image)" "$(state_get "$name" IMAGE)")"
         cmd_upgrade "$name" "${target:-$IMAGE}"
         ;;
-      "Run the doctor") cmd_doctor ;;
-      "Remove a container") name="$(pick_container "Remove which container?")" && cmd_remove "$name" ;;
-      "Quit"|"") return 0 ;;
+      menu_doctor) cmd_doctor ;;
+      menu_remove) name="$(pick_container "$(t prompt_remove_which)")" && cmd_remove "$name" ;;
+      menu_quit|"") return 0 ;;
+      # A label we could not map back to a key means the menu and this case have
+      # drifted apart (a new entry added to one side only). Say so instead of
+      # falling through to a silent no-op, which is indistinguishable from the
+      # menu being broken.
+      *) warn "unrecognised menu selection: '${choice}' (key='${key}')" ;;
     esac
     printf '\n'
   done
@@ -846,14 +969,13 @@ main() {
       # `bash install.sh < /dev/null` is also a non-tty run, but there the usage
       # is the right answer, and the empty BASH_SOURCE is what distinguishes them.
       if [[ -z "${SCRIPT_PATH:-}" ]]; then
-        printf 'install.sh: nothing was changed - this ran non-interactively, so the\n' >&2
-        printf 'interactive TUI could not start (stdin is the piped script).\n\n' >&2
-        printf 'Run it with a terminal, or pass a subcommand through the pipe:\n\n' >&2
+        printf '%s\n' "$(tf pipe_no_tui)" >&2
+        printf '%s\n\n' "$(t pipe_run_with_tty)" >&2
         printf '  curl -fsSL %s/%s/install.sh | bash -s -- create --name dsh-box\n' \
           "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
         printf '  curl -fsSL %s/%s/install.sh | bash -s -- --help\n\n' \
           "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
-        printf 'Or save it first and run it with a terminal:\n\n' >&2
+        printf '%s\n\n' "$(t pipe_or_save)" >&2
         printf '  curl -fsSL %s/%s/install.sh -o install.sh && bash install.sh\n' \
           "$INSTALL_BASE_URL" "$INSTALL_REF" >&2
         return 1

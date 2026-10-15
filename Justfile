@@ -135,14 +135,24 @@ containers-full $target_image=image_name $tag=default_tag: (containers-all targe
 # has been built.
 [group('Lint')]
 static: (decoupling) && (contract)
+# The interface's language handling: locale detection, catalogue completeness, and
+# the fact that the TUI dispatches on a stable key rather than on the translated
+# label it happens to be showing.
+[group('Lint')]
+language:
+    bash tests/i18n.sh
 # The engine-free suite plus the firstboot and bootstrap contracts. `just` allows
 # one `&&` chain per recipe, so the middle name carries the third dependency for
 # the same reason `static` exists at all; `verify-all` is what runs everything.
 [group('Lint')]
 static-more: (firstboot) && (bootstrap)
+# Carries the remaining engine-free checks; see `static-more` for why these names
+# are split up.
+[group('Lint')]
+static-rest: (language) && (static-more)
 # The engine-free suite plus the firstboot and bootstrap contracts.
 [group('Lint')]
-static-all: (static) && (static-more)
+static-all: (static) && (static-rest)
 
 # verify: requires a built image. Rebuilds it first, then re-runs every test that
 # exercises it. Depends on `containers-full`, not `containers`: `just` allows only

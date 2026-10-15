@@ -27,14 +27,18 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 install_sh="${repo_root}/install.sh"
 
-files=(
-  image.env
-  installer/lib/agents.sh
-  installer/lib/commands.sh
-  installer/lib/engine.sh
-  installer/lib/state.sh
-  installer/lib/ui.sh
+# The list of bootstrap files is read out of install.sh rather than repeated here.
+# It used to be a second hard-coded copy, and the two drifted the moment a file was
+# added: stamping reported success while the new file stayed unstamped, so every
+# piped install died on a missing checksum. There is one list, and install.sh owns
+# it.
+mapfile -t files < <(
+  awk '/^BOOTSTRAP_FILES=\(/{inside=1; next} inside && /^\)/{exit} inside && NF{print $1}' "$install_sh"
 )
+if [[ "${#files[@]}" -eq 0 ]]; then
+  echo "could not read BOOTSTRAP_FILES out of ${install_sh}" >&2
+  exit 1
+fi
 
 check_only=0
 case "${1:-}" in

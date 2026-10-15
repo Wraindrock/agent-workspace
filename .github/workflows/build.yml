@@ -209,6 +209,13 @@ jobs:
       - name: curl | bash bootstrap contract
         run: bash tests/bootstrap.sh
 
+      # The interface follows the user's locale, and the TUI dispatches on a stable
+      # key rather than on the label it is showing. Both are invisible in English: a
+      # translated menu whose dispatch matched on the text would draw perfectly and
+      # then do nothing at all. No engine.
+      - name: interface language contract
+        run: bash tests/i18n.sh
+
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
       # ------------------------------------------------------------------

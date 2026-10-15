@@ -227,7 +227,7 @@ echo "ci coverage"
 # it here: a script CI silently stops running has to fail the lint instead of
 # quietly drifting away from the documentation. Adding a test means adding it to
 # this list *and* to build.yml, in the same change.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh; do
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh tests/i18n.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else
