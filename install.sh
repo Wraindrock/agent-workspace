@@ -102,18 +102,18 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="6643c40dd43816d0f1bc007e15d5aad90ae467df0893a1d24ba2827b433e8351"
+  [installer/lib/commands.sh]="6ddf0272f120c968929f31a47a82c9dc481e48da782f3ed6134204f620ebb3d7"
   [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
-  [installer/lib/i18n.sh]="a25c57a037524da06cecff29d00630c2c2bd8336919e51a4d37a7e0faeb263d3"
+  [installer/lib/i18n.sh]="5374b8c24eaea9adba6c8d9819d7f41fdd1850b7266d77d198ea43d37c57c367"
   [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="6643c40dd43816d0f1bc007e15d5aad90ae467df0893a1d24ba2827b433e8351"
+  [installer/lib/commands.sh]="6ddf0272f120c968929f31a47a82c9dc481e48da782f3ed6134204f620ebb3d7"
   [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
-  [installer/lib/i18n.sh]="a25c57a037524da06cecff29d00630c2c2bd8336919e51a4d37a7e0faeb263d3"
+  [installer/lib/i18n.sh]="5374b8c24eaea9adba6c8d9819d7f41fdd1850b7266d77d198ea43d37c57c367"
   [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
@@ -605,7 +605,11 @@ create_specs() {
     if [[ "${DRY_RUN:-0}" -eq 0 && "$(state_get "$name" WEB)" == "1" ]]; then
       local web_port
       web_port="$(state_get "$name" WEB_HOST_PORT)"
-      if [[ -n "$web_port" ]]; then
+      # Nothing else starts the web UI, so a container created without this would
+      # publish a port that answers with a connection reset - which reads as "it
+      # did not start". Bring it up here; if that has to wait for the first boot
+      # to finish, web_ui_bring_up warns and this names the command to run later.
+      if [[ -n "$web_port" ]] && ! web_ui_bring_up "$name"; then
         msg_k web_ui_line "${name}" "${web_port}"
       fi
     fi

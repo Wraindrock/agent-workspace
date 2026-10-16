@@ -176,6 +176,20 @@ run_no_key() {
   RUN_STATUS=$?
 }
 
+# run_firstboot_pending runs the installer against a container whose first boot
+# has not finished yet: the container runs, but the agent user and therefore the
+# web UI cannot exist yet. The first-boot wait is cut to one second so the
+# assertion does not sit through the real timeout.
+run_firstboot_pending() {
+  RUN_OUT="$(env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" FAKE_ENGINE_FIRSTBOOT_PENDING=1 \
+    CONTAINER_FIRSTBOOT_TIMEOUT=1 \
+    bash "$INSTALLER" "$@" 2>&1 </dev/null)"
+  RUN_STATUS=$?
+}
+
 # --- host paths ------------------------------------------------------------
 
 data() { printf '%s/agent-workspace' "$XDG_DATA_HOME"; }
@@ -702,7 +716,13 @@ is "creating a web container exits 0" 0 "$RUN_STATUS"
 is "the web UI is enabled by default" 1 "$(meta_key webbox WEB)"
 WEB_PORT="$(meta_key webbox WEB_HOST_PORT)"
 is "an unused port is assigned automatically" "$WEB_PORT_BASE" "$WEB_PORT"
-contains "create points at the web command" "install.sh web webbox" "$RUN_OUT"
+# The installer does not hand out a URL that answers with a connection reset: the
+# container's first boot is what creates the agent user, and the web UI runs as
+# that user, so create waits for the boot and then starts the UI itself.
+contains "create starts the web UI" \
+  "dsh web --patch /usr/share/agent-workspace/dsh-web.yml --no-open" "$(engine_log)"
+contains "create prints the sign-in URL" "faketok3n" "$RUN_OUT"
+lacks "create does not point at a command it already ran" "install.sh web webbox" "$RUN_OUT"
 is "the port is published on the host loopback only" "127.0.0.1:${WEB_PORT}:3080" \
   "$(cat "$FAKE_ENGINE_STATE/containers/webbox/publish" 2>/dev/null || true)"
 is "the engine resolves the published port" "127.0.0.1:${WEB_PORT}" \
@@ -723,6 +743,36 @@ contains "a second web call reuses the running UI" "already running" "$RUN_OUT"
 run web --dry-run webbox
 is "web --dry-run exits 0" 0 "$RUN_STATUS"
 contains "web --dry-run prints the exec" "dry-run: podman exec --detach" "$RUN_OUT"
+
+# The web UI is a process inside the container, so stopping the container kills
+# it. Every path that leaves the container running has to bring it back, or the
+# published port answers with a connection reset - which reads as "it did not
+# start". A missing webtoken file is how the fake engine says "nothing is
+# listening on that port".
+rm -f "$FAKE_ENGINE_STATE/containers/webbox/webtoken"
+run stop webbox
+is "stopping the container exits 0" 0 "$RUN_STATUS"
+run start webbox
+is "starting a stopped container exits 0" 0 "$RUN_STATUS"
+contains "start brings the web UI back" "faketok3n" "$RUN_OUT"
+
+rm -f "$FAKE_ENGINE_STATE/containers/webbox/webtoken"
+run restart webbox
+is "restarting exits 0" 0 "$RUN_STATUS"
+contains "restart brings the web UI back" "faketok3n" "$RUN_OUT"
+
+# a first boot that has not finished: the container runs, the agent user does not
+# exist yet, and the installer says so instead of promising a URL
+run_firstboot_pending create --agent dsh --name webpending --yes
+is "creating while the first boot is pending exits 0" 0 "$RUN_STATUS"
+contains "the unfinished first boot is reported" "has not finished its first boot" "$RUN_OUT"
+contains "the user is told how to start the UI later" "install.sh web webpending" "$RUN_OUT"
+run_firstboot_pending web webpending
+is "web on a container still in its first boot fails" 1 "$RUN_STATUS"
+contains "the unfinished first boot is explained" "has not finished its first boot" "$RUN_OUT"
+run_firstboot_pending start webpending
+is "start still exits 0 when the first boot is pending" 0 "$RUN_STATUS"
+contains "start warns instead of failing" "has not finished its first boot" "$RUN_OUT"
 
 run list
 contains "list shows the published web port" "$WEB_PORT" "$RUN_OUT"
@@ -756,6 +806,13 @@ is "an opencode container is created" 0 "$RUN_STATUS"
 run web weboc
 is "web on an agent without a known UI fails" 1 "$RUN_STATUS"
 contains "the missing web UI is reported" "no web UI" "$RUN_OUT"
+# Nothing can serve that port, so publishing it would only hand out a URL that
+# resets the connection: the port is dropped and the user is told why.
+is "an agent with no web UI publishes no port" 0 "$(meta_key weboc WEB)"
+missing "no port is published for it" "$FAKE_ENGINE_STATE/containers/weboc/publish"
+run create --agent opencode --name webocpin --web-port 34098 --yes
+is "asking for a web port on such an agent still exits 0" 0 "$RUN_STATUS"
+contains "the ignored web port is explained" "no web UI" "$RUN_OUT"
 
 run web --dry-run ghost
 is "web on an unmanaged container fails" 1 "$RUN_STATUS"
@@ -779,7 +836,7 @@ rm -f "$FAKE_ENGINE_STATE/containers/webpin/publish"
 run doctor --strict
 is "doctor fails without the published port" 1 "$RUN_STATUS"
 contains "doctor reports the missing web port" "no host port is published" "$RUN_OUT"
-run remove webbox webpin webnone weboc --yes
+run remove webbox webpin webnone weboc webpending webocpin --yes
 is "the web test containers are removed" 0 "$RUN_STATUS"
 
 # =========================================================================

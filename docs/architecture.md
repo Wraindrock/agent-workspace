@@ -150,9 +150,14 @@ why both keys are present rather than only the host.
 The host side stays closed and boring: `create` publishes
 `127.0.0.1:<host port>:3080` and nothing else, and records the port with the
 container so `rollback`, `recover` and `upgrade` reproduce the same mapping.
-`install.sh web NAME` starts the UI as the agent user, waits for the container's
+Starting the UI is the installer's job, not the image's: `create` waits for the
+container's first boot - the agent user is what the UI runs as - and then calls the
+same helper as `install.sh web NAME`, which starts the UI as that user, waits for the
 published port to answer, reads the one-time token out of the UI's log, and prints the
 local URL; the first request from a browser trades that token for a 30-day cookie.
+`start`, `restart`, `recover`, `rollback`, `fork` and `upgrade` call it too whenever
+they leave a container running, because the UI is a process in the container and a
+published port with nothing behind it answers with a connection reset.
 
 Binding inside the container instead of joining the host network is deliberate: the
 container keeps its own network namespace, the mapping only ever touches host

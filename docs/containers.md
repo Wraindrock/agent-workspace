@@ -127,17 +127,28 @@ container's loopback is unreachable from the host, so the image carries a small
 overlay that lets the UI listen inside the container; the installer then publishes
 that port on the host's loopback only, as `127.0.0.1:<host port>:3080`.
 
-~~~bash
-./install.sh web dsh-box
-~~~
-
-`web` starts `dsh web` inside the container as the agent user, waits for it to come
-up and prints a one-time link:
+The installer also starts the UI for you, because the UI is a process *inside* the
+container: it dies whenever the container does, and a published port with nothing
+behind it answers with a connection reset, which reads as "the container did not
+start". `create` waits for the container's first boot (that is what creates the
+agent user the UI runs as, up to `CONTAINER_FIRSTBOOT_TIMEOUT` seconds, 180 by
+default) and then starts it; `start`, `restart`, `recover`, `rollback`, `fork` and
+`upgrade` do the same whenever they leave a container running. When the UI comes up
+you get a one-time link:
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
   open: http://127.0.0.1:34700/?token=...
   the token sets a 30-day cookie in that browser, so the link is not needed again
+~~~
+
+If the UI is not running - a container stopped outside the installer, or one whose
+first boot had not finished when it was created - the same link comes from an
+explicit command. This one fails loudly when the first boot is still going, instead
+of printing a URL that does not answer:
+
+~~~bash
+./install.sh web dsh-box
 ~~~
 
 The host port is picked from the first free one at or above 3080 when the container is
@@ -150,7 +161,9 @@ from another machine through your own tunnel if you need that.
 The image ships the `dsh` overlay that makes this possible
 (`/usr/share/agent-workspace/dsh-web.yml`), because `dsh web` refuses to bind
 anything but loopback by default. Only agents with a web UI the installer knows how to
-start can be opened this way; anything else is refused with a plain message.
+start can be opened this way; anything else gets no published port at all (the
+installer says so when `--web-port` asked for one), rather than a port that resets the
+connection.
 
 ## Non-interactive use
 
@@ -291,6 +304,30 @@ find /proc/*/fd -lname anon_inode:inotify 2>/dev/null | wc -l
 
 `tests/integration.sh` ("the container the installer creates actually runs")
 detects the error string and prints this diagnosis instead of blaming the image.
+
+### The published web port answers with a connection reset
+
+Symptom: `curl -v http://127.0.0.1:3081/` (the port `install.sh list` reports) ends
+in `Recv failure: Connection reset by peer`, while the container itself is up and
+`podman ps` shows it running.
+
+Root cause: the port is published by the engine even when nothing inside the
+container is listening on it. The web UI is a process in the container, not a
+service the image starts, so it is not running whenever the container was started
+without it - the installer starts it, and a container started by hand (or one whose
+first boot had not finished when it was created) has none.
+
+Workaround: `./install.sh web <name>` starts it and prints the one-time sign-in link.
+This is what `create`, `start`, `restart`, `recover`, `rollback`, `fork` and
+`upgrade` do for you. When the first boot is still running the command says so
+(`has not finished its first boot`) instead of printing a URL that does not answer;
+wait for it and run the command again, or raise `CONTAINER_FIRSTBOOT_TIMEOUT`
+(seconds, 180 by default) so `create` waits longer.
+
+Escape hatch: `--no-web` on `create` (or a `WEB=0` line in the container's `meta`
+under `~/.local/share/agent-workspace/containers/<name>/`) means no port is
+published at all. An agent the installer has no web UI for is never given a
+published port in the first place.
 
 ### Distrobox and toolbox
 

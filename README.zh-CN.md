@@ -126,8 +126,9 @@ podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
 podman exec -it agent-box /bin/bash
 ~~~
 
-任何实例首次启动时，镜像会创建持有 agent 工作区、并用来运行 web UI 的 `agent`
-用户（见[首次开机](#首次开机)）。
+任何实例首次启动时，镜像会创建持有 agent 工作区、并且是 web UI 运行身份的 `agent`
+用户（见[首次开机](#首次开机)）。这样直接跑起来的实例不会自己启动 web UI：安装器会
+为它创建的容器启动，其他容器用 `./install.sh web` 启动。
 
 ## “声明式”在这里的含义
 
@@ -210,24 +211,30 @@ scratch      opencode  ephemeral
 
 ## 在宿主机打开 agent 的 web UI
 
-DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安装器把它发布到你的回环：
-
-~~~bash
-./install.sh web dsh-box
-~~~
-
-该命令在容器内以 agent 用户启动 `dsh web`，等它起来后打印一个一次性链接：
+DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安装器把它发布到你的回环
+——并且会替你启动它：容器的首次启动一创建出 web UI 所运行的 `agent` 用户，就把它拉
+起来；凡是将容器留在运行状态的命令都会这么做：`create`、`start`、`restart`、
+`recover`、`rollback`、`fork`、`upgrade`。UI 起来后会打印一个一次性链接：
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
   open: http://127.0.0.1:34700/?token=...
 ~~~
 
-第一次访问会在浏览器里写入 30 天有效的 cookie，因此 token 只需要用一次。宿主端口在
-创建容器时选定并跟容器一起记录，所以 `rollback`、`recover`、`upgrade` 都沿用同一个
-地址，`fork` 出的新容器会另行分配。`./install.sh create --web-port 8080` 可以自己指定
-端口，`--no-web` 则完全不发布端口。映射始终是 `127.0.0.1:<宿主端口>:3080`，从网络上
-访问不到。细节见 [docs/containers.md](docs/containers.md)。
+第一次访问会在浏览器里写入 30 天有效的 cookie，因此 token 只需要用一次。如果 UI 没在
+运行——容器在安装器之外被停过，或创建时首次启动还没跑完——这条命令会打印同样的链接，
+并且在起不来时明确报错，而不是给你一个只会把连接重置掉的网址：
+
+~~~bash
+./install.sh web dsh-box
+~~~
+
+宿主端口在创建容器时选定并跟容器一起记录，所以 `rollback`、`recover`、`upgrade` 都
+沿用同一个地址，`fork` 出的新容器会另行分配。`./install.sh create --web-port 8080`
+可以自己指定端口，`--no-web` 则完全不发布端口。安装器没有能力打开 web UI 的智能体
+（`opencode`）根本不发布端口：发布一个后面什么都没有的端口，只会看起来像装坏了。映射
+始终是 `127.0.0.1:<宿主端口>:3080`，从网络上访问不到。细节见
+[docs/containers.md](docs/containers.md)。
 
 ## 快照、回滚与分叉
 

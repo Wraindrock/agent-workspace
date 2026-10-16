@@ -352,6 +352,13 @@ case "$cmd" in
         printf 'dsh web: http://127.0.0.1:3080/?token=faketok3n\n' >"${dir}/webtoken"
         exit 0
         ;;
+      *\.provisioned*)
+        # the installer waits for the first boot marker this way: with
+        # FAKE_ENGINE_FIRSTBOOT_PENDING=1 the container is up but not provisioned
+        # yet, which is the window where `dsh web` cannot find the agent user
+        [[ "${FAKE_ENGINE_FIRSTBOOT_PENDING:-0}" == "1" ]] && exit 1
+        exit 0
+        ;;
     esac
     exit 0
     ;;

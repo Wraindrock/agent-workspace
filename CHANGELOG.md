@@ -24,6 +24,24 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
   `CONTAINER=`/`NAME` declaration format (machine-readable), and the `dry-run` label
   with the engine command it prints (a copyable shell command).
 
+- The installer starts the agent's web UI itself. The UI is a process inside the
+  container, so it dies with the container and nothing brought it back: a container
+  created with the default settings published a host port with nothing behind it, and
+  `curl` on that port ended in `Recv failure: Connection reset by peer` - which reads as
+  "the container did not start" even though it was running (the README claimed the first
+  boot ran the UI; it does not). `create` now waits for the container's first boot, which
+  is what creates the agent user `dsh web` runs as (`CONTAINER_FIRSTBOOT_TIMEOUT`
+  seconds, 180 by default), starts the UI and prints the one-time sign-in link; `start`,
+  `restart`, `recover`, `rollback`, `fork` and `upgrade` do the same whenever they leave
+  a container running. An agent the installer has no web UI for no longer gets a
+  published port at all - a port that resets the connection only looks broken - and the
+  port is dropped with an explanation when `--web-port` asked for one. `install.sh web`
+  keeps working as the explicit command, and now fails with the reason when the first
+  boot is still going instead of printing a URL that does not answer.
+  `tests/install.sh` asserts the UI starts at create, comes back after `stop`/`start`
+  and `restart`, that a pending first boot is reported, and that an agent without a web
+  UI gets no published port.
+
 ### Fixed
 
 - The installer no longer runs a stale image because the tag was already present

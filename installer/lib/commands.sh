@@ -160,6 +160,15 @@ create_container_from() {
     web=0
     web_port=""
   fi
+  if [[ "$web" == "1" ]] && ! agent_web_command "$agent" >/dev/null 2>&1; then
+    # Nothing can serve this port, so publishing it would only hand out a URL that
+    # resets the connection. Say so when a port was asked for explicitly.
+    if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
+      warn_k warn_no_web_ui "${agent}" "${name}"
+    fi
+    web=0
+    web_port=""
+  fi
 
   case "$mode" in
     persistent)
@@ -301,10 +310,14 @@ cmd_start() {
   state_engine "$name"
   if eng_container_running "$name"; then
     ok_k already_running "${name}"
-    return 0
+  else
+    eng_start "$name" >/dev/null
+    ok_k started "${name}"
   fi
-  eng_start "$name" >/dev/null
-  ok_k started "${name}"
+  # The web UI is a process inside the container, so stopping the container kills
+  # it: whichever command brings the container up brings its published UI up too,
+  # instead of leaving the port to reset the connection.
+  web_ui_bring_up "$name" || true
 }
 
 cmd_stop() {
@@ -322,6 +335,7 @@ cmd_restart() {
   eng_stop "$name"
   eng_start "$name" >/dev/null
   ok_k restarted "${name}"
+  web_ui_bring_up "$name" || true
 }
 
 cmd_logs() {
@@ -377,44 +391,25 @@ container_web_up() {
   "$ENGINE_BIN" exec "$name" /bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1
 }
 
-# cmd_web NAME starts the agent's web UI inside the container, waits for the
-# launch token and prints a one-time sign-in URL on the host loopback.
-cmd_web() {
-  local name="${1}" port webcmd token agent log_dir log_file running=0 i
-  require_container "$name"
-  state_engine "$name"
+# web_ui_start NAME starts the agent's web UI inside a running container, waits
+# for the launch token and prints the one-time sign-in URL on the host loopback.
+# Shared by `install.sh web` and by every command that leaves a container running,
+# so a published port never answers with a connection reset. Fails when this
+# installer has no web UI to open for the agent, or the container publishes none.
+web_ui_start() {
+  local name="${1}" agent webcmd port log_dir log_file token running=0 i
   agent="$(container_agent "$name")"
-
-  if [[ "$(container_mode "$name")" != "persistent" ]]; then
-    die_k err_web_ephemeral "${name}"
-  fi
-  webcmd="$(agent_web_command "$agent")" || die_k err_no_web_ui "${agent}"
-  if [[ "$(state_get "$name" WEB)" == "0" ]]; then
-    die_k err_web_no_web "${name}"
-  fi
+  webcmd="$(agent_web_command "$agent")" || return 1
 
   port="$(state_get "$name" WEB_HOST_PORT)"
   if [[ -z "$port" ]]; then
     port="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
     port="${port##*:}"
   fi
-  [[ -n "$port" ]] || die_k err_web_no_port "${name}" "${name}"
-
-  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-    printf 'dry-run: %s exec --detach --user %s --env HOME=/home/%s %s /bin/bash -c %q\n' \
-      "$ENGINE_BIN" "$AGENT_USER" "$AGENT_USER" "$name" "$webcmd"
-    printf '%s\n' "$(tf dry_url "$port")"
-    return 0
-  fi
-
-  if ! eng_container_running "$name"; then
-    eng_start "$name" >/dev/null 2>&1 || true
-    sleep 2
-  fi
-  eng_container_running "$name" || die_k err_start_it "${name}"
+  [[ -n "$port" ]] || return 1
 
   log_dir="/home/${AGENT_USER}/.cache/agent-workspace"
-  log_file="${log_dir}/dsh-web.log"
+  log_file="${log_dir}/${agent}-web.log"
 
   if container_web_up "$name" "${WEB_CONTAINER_PORT:-3080}"; then
     running=1
@@ -440,6 +435,89 @@ cmd_web() {
   else
     warn_k web_no_token "${log_file}"
   fi
+  return 0
+}
+
+# wait_agent_ready NAME [TIMEOUT] succeeds once the container's first boot has
+# finished provisioning, which is when the agent user exists. `dsh web` runs as
+# that user, so starting it earlier fails with "unable to find user agent"; the
+# marker file is the readiness probe (a bounded wait, never a fixed sleep), and
+# the wait gives up as soon as the container stops.
+wait_agent_ready() {
+  local name="${1}" timeout="${2:-${CONTAINER_FIRSTBOOT_TIMEOUT:-180}}" waited=0
+  while [[ "$waited" -lt "$timeout" ]]; do
+    if "$ENGINE_BIN" exec "$name" /bin/bash -c 'test -f /var/lib/agent-workspace/.provisioned' >/dev/null 2>&1; then
+      return 0
+    fi
+    eng_container_running "$name" || return 1
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+# web_ui_bring_up NAME brings a container's web UI up, or says why it did not.
+# Returns 1 when the container publishes no web UI, when this installer has none
+# to open for the agent, or when the first boot is still running -- the last two
+# with a warning, because the caller promised a UI on a published port. Callers
+# that must not fail (the lifecycle commands) simply ignore the status.
+web_ui_bring_up() {
+  local name="${1}" agent
+  state_engine "$name"
+  [[ "$(state_get "$name" WEB)" == "1" ]] || return 1
+  agent="$(container_agent "$name")"
+  agent_web_command "$agent" >/dev/null 2>&1 || return 1
+  if ! wait_agent_ready "$name"; then
+    warn_k warn_firstboot_pending "${name}" "${CONTAINER_FIRSTBOOT_TIMEOUT:-180}"
+    return 1
+  fi
+  msg_k web_starting "${name}"
+  web_ui_start "$name"
+}
+
+# cmd_web NAME starts the agent's web UI inside the container, waits for the
+# launch token and prints a one-time sign-in URL on the host loopback.
+cmd_web() {
+  local name="${1}" port agent
+  require_container "$name"
+  state_engine "$name"
+  agent="$(container_agent "$name")"
+
+  if [[ "$(container_mode "$name")" != "persistent" ]]; then
+    die_k err_web_ephemeral "${name}"
+  fi
+  agent_web_command "$agent" >/dev/null || die_k err_no_web_ui "${agent}"
+  if [[ "$(state_get "$name" WEB)" == "0" ]]; then
+    die_k err_web_no_web "${name}"
+  fi
+
+  port="$(state_get "$name" WEB_HOST_PORT)"
+  if [[ -z "$port" ]]; then
+    port="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
+    port="${port##*:}"
+  fi
+  [[ -n "$port" ]] || die_k err_web_no_port "${name}" "${name}"
+
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    printf 'dry-run: %s exec --detach --user %s --env HOME=/home/%s %s /bin/bash -c %q\n' \
+      "$ENGINE_BIN" "$AGENT_USER" "$AGENT_USER" "$name" "$(agent_web_command "$agent")"
+    printf '%s\n' "$(tf dry_url "$port")"
+    return 0
+  fi
+
+  if ! eng_container_running "$name"; then
+    eng_start "$name" >/dev/null 2>&1 || true
+    sleep 2
+  fi
+  eng_container_running "$name" || die_k err_start_it "${name}"
+
+  # The UI runs as the agent user, which the first boot creates. An explicit
+  # `install.sh web` waits for that instead of reporting a token it cannot read.
+  if ! wait_agent_ready "$name"; then
+    die_k err_firstboot_pending "${name}" "${CONTAINER_FIRSTBOOT_TIMEOUT:-180}"
+  fi
+
+  web_ui_start "$name" || die_k err_no_web_ui "${agent}"
 }
 
 # --- snapshots -------------------------------------------------------------
@@ -601,6 +679,8 @@ cmd_rollback() {
   state_set "$name" SNAPSHOT_LAST "$id"
   state_record_event "$name" "rolled back to ${id}"
   ok_k rolled_back_to "${name}" "${id}"
+  # the container was replaced, so its web UI has to come back with it
+  web_ui_bring_up "$name" || true
 }
 
 cmd_recover() {
@@ -611,12 +691,14 @@ cmd_recover() {
   if eng_container_exists "$name"; then
     if eng_container_running "$name"; then
       ok_k recover_running "${name}"
+      web_ui_bring_up "$name" || true
       return 0
     fi
     eng_start "$name" >/dev/null
     sleep 2
     if eng_container_running "$name"; then
       ok_k recovered_restart "${name}"
+      web_ui_bring_up "$name" || true
     else
       warn_k recover_not_staying_up "${name}" "${name}"
     fi
@@ -638,6 +720,7 @@ cmd_recover() {
     state_set "$name" SNAPSHOT_LAST "$id"
     state_record_event "$name" "recovered from ${id}"
     ok_k recovered_from_snap "${name}" "${id}"
+    web_ui_bring_up "$name" || true
   else
     image="$(container_run_image "$name")"
     [[ -n "$image" ]] || image="$IMAGE"
@@ -645,6 +728,7 @@ cmd_recover() {
     create_container_from "$name" "$agent" "$mode" "$workspace" "$image" "$(state_get "$name" IMAGE)"
     state_record_event "$name" "recovered from image ${image}"
     warn_k warn_rebuilt "${name}" "${image}"
+    web_ui_bring_up "$name" || true
   fi
 }
 
@@ -706,6 +790,8 @@ cmd_fork() {
   state_set "$new" FORKED_FROM "$src"
   [[ -n "$snap" ]] && state_set "$new" FORKED_AT "$snap"
   ok_k forked_into "${src}" "${new}" "${agent}" "${mode}"
+  # a fork is a new container with its own fresh port: bring that UI up as well
+  web_ui_bring_up "$new" || true
 }
 
 cmd_upgrade() {
@@ -725,6 +811,7 @@ cmd_upgrade() {
   create_container_from "$name" "$agent" "$mode" "$workspace" "$target" "$target"
   state_record_event "$name" "upgraded to ${target}"
   ok_k upgraded_named "${name}" "${target}"
+  web_ui_bring_up "$name" || true
 }
 
 cmd_remove() {

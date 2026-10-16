@@ -141,7 +141,9 @@ podman exec -it agent-box /bin/bash
 ~~~
 
 On first boot inside any instance, the image creates the `agent` user that owns the
-agent workspace and runs the web UI (see [First boot](#first-boot)).
+agent workspace and that the web UI runs as (see [First boot](#first-boot)). A run
+started this way does not start the web UI itself; the installer does that for the
+containers it creates, and `./install.sh web` does it for any other one.
 
 ## What "declarative" means here
 
@@ -243,14 +245,10 @@ when the manifest cannot be read. Full reference:
 ## Opening the agent's web UI
 
 DeepSeek Harness ships a web UI. The container keeps it on its own loopback and the
-installer publishes it on yours:
-
-~~~bash
-./install.sh web dsh-box
-~~~
-
-The command starts `dsh web` inside the container, waits for it to answer, and prints
-a one-time link:
+installer publishes it on yours - and starts it, as soon as the container's first
+boot has created the `agent` user it runs as. Every command that leaves a container
+running does the same: `create`, `start`, `restart`, `recover`, `rollback`, `fork`
+and `upgrade`. When the UI comes up you get a one-time link:
 
 ~~~
 ✓ dsh web UI is published on http://127.0.0.1:34700/ (container port 3080)
@@ -258,11 +256,22 @@ a one-time link:
 ~~~
 
 That first request sets a 30-day cookie in your browser, so the token is only needed
-once. The host port is chosen when the container is created and remembered with it, so
+once. If the UI is not running - a container that was stopped outside the installer,
+or one whose first boot was still going when it was created - this prints the same
+link, and fails loudly instead of handing you a URL that answers with a connection
+reset:
+
+~~~bash
+./install.sh web dsh-box
+~~~
+
+The host port is chosen when the container is created and remembered with it, so
 `rollback`, `recover` and `upgrade` keep the same URL; `fork` assigns a fresh one.
 `./install.sh create --web-port 8080` picks a port yourself and `--no-web` skips the
-published port entirely. The mapping is always `127.0.0.1:<host port>:3080` - nothing
-is reachable from the network. Details: [docs/containers.md](docs/containers.md).
+published port entirely. An agent this installer has no web UI for (`opencode`)
+publishes no port at all: a published port with nothing behind it only looks like a
+broken install. The mapping is always `127.0.0.1:<host port>:3080` - nothing is
+reachable from the network. Details: [docs/containers.md](docs/containers.md).
 
 ## Snapshots, rollback and forks
 
@@ -351,9 +360,9 @@ A one-shot `agent-workspace-firstboot.service` creates the `agent` user
 (configurable via `AGENT_WORKSPACE_USER`, set per machine in
 `/etc/agent-workspace/config.env`), adds it to `wheel`, grants it a sub-id range so
 rootless podman works, and enables lingering. That user owns the agent workspace and
-runs the web UI; the terminal side (`install.sh enter`, `install.sh shell`) execs the
-agent CLI as the container's own root user, so the container is not a security
-boundary against the agent. A daily
+is the user the web UI runs as; the terminal side (`install.sh enter`, `install.sh
+shell`) execs the agent CLI as the container's own root user, so the container is not
+a security boundary against the agent. A daily
 `agent-workspace-health.timer` runs `agent-workspace doctor --quiet` so drift
 shows up in `journalctl` instead of in a broken agent session.
 

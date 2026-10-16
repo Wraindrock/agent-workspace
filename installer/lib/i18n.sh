@@ -177,7 +177,7 @@ t() {
         creds_from_env)       value="使用环境变量里的 %s" ;;
         creds_no_tty)         value="没有终端可用于提问：跳过 %s（之后可加到 %s）" ;;
         wrote_file)           value="已写入 %s" ;;
-        web_ui_line)          value="Web 界面：install.sh web %s  →  http://127.0.0.1:%s/" ;;
+        web_ui_line)          value="Web 界面还没起来；运行这条命令启动它：install.sh web %s  →  http://127.0.0.1:%s/" ;;
         # --- snapshots and rollback ---------------------------------------
         no_snapshots)         value="%s 还没有快照" ;;
         snapshotting_before_rollback) value="正在回滚前为 %s 创建快照" ;;
@@ -221,6 +221,9 @@ t() {
         doc_snap_ok)          value="快照 %s 的归档可读" ;;
         doc_snap_bad)         value="快照 %s 的归档已损坏：%s" ;;
         # --- web UI --------------------------------------------------------
+        web_starting)         value="%s：正在启动 Web 界面（首次启动还没跑完就等它跑完）" ;;
+        warn_firstboot_pending) value="'%s' 的首次启动还没跑完（已等 %s 秒）；容器在运行，但 Web 界面还没起来；等它就绪后运行：install.sh web %s" ;;
+        warn_no_web_ui)       value="智能体 '%s' 没有 Web 界面，所以 '%s' 不发布宿主端口" ;;
         warn_web_port_ephemeral) value="ephemeral 容器会忽略 --web-port；它们没有长期运行的 Web 界面" ;;
         web_published)        value="%s 的 Web 界面已发布在 http://127.0.0.1:%s/（容器端口 %s）" ;;
         err_web_ephemeral)    value="'%s' 是 ephemeral 容器；它的 Web 界面会随容器一起退出" ;;
@@ -250,6 +253,7 @@ t() {
         err_no_such_container) value="本安装器没有管理名为 '%s' 的容器（试试：install.sh list）" ;;
         err_pull_failed)      value="无法拉取 %s" ;;
         err_no_web_ui)        value="本安装器不知道该怎样为智能体 '%s' 打开 Web 界面" ;;
+        err_firstboot_pending) value="'%s' 的首次启动还没跑完（已等 %s 秒）；等它就绪后再运行：install.sh web %s" ;;
         err_start_it)         value="容器 %s 没有在运行；用这条命令启动：install.sh start %s" ;;
         err_no_snapshot)      value="%s 没有可用快照（运行：install.sh snapshot %s）" ;;
         err_snapshot_not_found) value="%s 找不到快照 %s" ;;
@@ -392,7 +396,7 @@ t() {
         creds_from_env)       value="using %s from the environment" ;;
         creds_no_tty)         value="no terminal for prompts: skipping %s (add it later to %s)" ;;
         wrote_file)           value="wrote %s" ;;
-        web_ui_line)          value="web UI: install.sh web %s  →  http://127.0.0.1:%s/" ;;
+        web_ui_line)          value="web UI not up yet; start it with: install.sh web %s  →  http://127.0.0.1:%s/" ;;
         # --- snapshots and rollback ---------------------------------------
         no_snapshots)         value="no snapshots for %s" ;;
         snapshotting_before_rollback) value="snapshotting %s before the rollback" ;;
@@ -436,6 +440,9 @@ t() {
         doc_snap_ok)          value="snapshot %s archive readable" ;;
         doc_snap_bad)         value="snapshot %s archive is corrupt: %s" ;;
         # --- web UI --------------------------------------------------------
+        web_starting)         value="starting the web UI in %s (waiting for its first boot if that is still running)" ;;
+        warn_firstboot_pending) value="'%s' has not finished its first boot (waited %s s); the container runs but its web UI is not up yet - run: install.sh web %s" ;;
+        warn_no_web_ui)       value="agent '%s' has no web UI, so '%s' publishes no host port" ;;
         warn_web_port_ephemeral) value="--web-port is ignored for ephemeral containers; they have no long-running web UI" ;;
         web_published)        value="%s web UI is published on http://127.0.0.1:%s/ (container port %s)" ;;
         err_web_ephemeral)    value="'%s' is an ephemeral container; its web UI would exit with the container" ;;
@@ -465,6 +472,7 @@ t() {
         err_no_such_container) value="no container named '%s' is managed by this installer (try: install.sh list)" ;;
         err_pull_failed)      value="could not pull %s" ;;
         err_no_web_ui)        value="no web UI this installer knows how to open for agent '%s'" ;;
+        err_firstboot_pending) value="'%s' has not finished its first boot (waited %s s); once it has, run: install.sh web %s" ;;
         err_start_it)         value="container %s is not running; start it with: install.sh start %s" ;;
         err_no_snapshot)      value="no snapshot available for %s (run: install.sh snapshot %s)" ;;
         err_snapshot_not_found) value="snapshot %s not found for %s" ;;
