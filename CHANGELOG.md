@@ -64,6 +64,12 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Fixed
 
+- `install.sh` carries the executable bit again, so the documented entry point
+  (`./install.sh`, which 90-odd doc lines use) runs from a clone instead of failing
+  with `Permission denied`. The only other documented form - the bootstrap's
+  `curl -o install.sh && bash install.sh` - works either way, which is how the bit
+  went missing without a test noticing. `tests/lint.sh` now asserts it.
+
 - The installer no longer runs a stale image because the tag was already present
   locally. `ensure_image` treated "the image exists" as "the image is current", so a
   host that had pulled `ghcr.io/wraindrock/agent-workspace:latest` days earlier kept

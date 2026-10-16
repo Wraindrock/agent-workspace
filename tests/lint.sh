@@ -192,6 +192,17 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
   fi
 done
 
+echo "the documented entry point runs"
+# Every doc says `./install.sh`, so the file has to carry the executable bit --
+# a clone that cannot run the one entry point is a defect no other check sees
+# (the bootstrap's `curl -o install.sh && bash install.sh` form does not need it,
+# which is exactly how it went unnoticed).
+if [[ -x install.sh ]]; then
+  pass "install.sh is executable (the docs invoke it as ./install.sh)"
+else
+  fail "install.sh is not executable, but the docs invoke it as ./install.sh"
+fi
+
 echo "installer structure"
 for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor" "cmd_web"; do
   if grep -qE "^${symbol}\(\) \{" installer/lib/commands.sh; then
