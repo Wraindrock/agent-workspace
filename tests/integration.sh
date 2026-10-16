@@ -109,6 +109,51 @@ if [[ "${status}" == "running" ]]; then
   else
     fail "/home/agent is not a mount point"
   fi
+
+  # The image's default dsh plugin set is seeded into the agent's home by the
+  # first boot, which runs asynchronously -- with --no-web nothing on the
+  # installer side waits for it -- so give it a bounded window and then judge
+  # the result. An image built without the module says so instead of failing.
+  if "${ENGINE}" exec "${NAME}" test -d /usr/share/agent-workspace/dsh/profiles; then
+    for _ in $(seq 1 60); do
+      if "${ENGINE}" exec "${NAME}" test -f /var/lib/agent-workspace/.provisioned; then
+        break
+      fi
+      sleep 1
+    done
+    if "${ENGINE}" exec "${NAME}" test -f /var/lib/agent-workspace/.provisioned; then
+      pass "the first boot finished (completion marker written)"
+    else
+      fail "the first boot did not finish within 60s"
+    fi
+    seeded="/home/agent/.dsh/profiles/web"
+    if "${ENGINE}" exec "${NAME}" test -f "${seeded}/package.json"; then
+      pass "the default dsh plugin set is seeded into the agent's home"
+    else
+      fail "${seeded}/package.json is missing"
+    fi
+    shipped_version="$("${ENGINE}" exec "${NAME}" cat /usr/share/agent-workspace/dsh/profiles.version 2>/dev/null | tr -d '[:space:]' || true)"
+    seeded_version="$("${ENGINE}" exec "${NAME}" sed -n 's/^version //p' "${seeded}/.agent-workspace-profile" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -n "${shipped_version}" ]] && [[ "${seeded_version}" == "${shipped_version}" ]]; then
+      pass "the seeded profile records the image's plugin set (${shipped_version})"
+    else
+      fail "the seeded profile records [${seeded_version:-nothing}], the image ships [${shipped_version:-nothing}]"
+    fi
+    seeded_digest="$("${ENGINE}" exec "${NAME}" sha256sum "${seeded}/package.json" 2>/dev/null | cut -d' ' -f1 || true)"
+    shipped_digest="$("${ENGINE}" exec "${NAME}" sha256sum /usr/share/agent-workspace/dsh/profiles/web/package.json 2>/dev/null | cut -d' ' -f1 || true)"
+    if [[ -n "${seeded_digest}" ]] && [[ "${seeded_digest}" == "${shipped_digest}" ]]; then
+      pass "the seeded profile is the image's, byte for byte"
+    else
+      fail "the seeded package.json is not the image's"
+    fi
+    if "${ENGINE}" exec "${NAME}" test -f "${seeded}/node_modules/.modules.yaml"; then
+      pass "the seeded profile carries the dependencies the build installed"
+    else
+      fail "${seeded} has no installed node_modules"
+    fi
+  else
+    echo "  --   this image ships no dsh plugin set (45-dsh-plugins off)"
+  fi
 else
   fail "the created container is ${status}, not running"
 fi

@@ -70,7 +70,9 @@ From `build_files/lib/common.sh`:
 Modules run in filename order. Prefixes are spaced by ten so modules can be
 inserted without renaming others, and the numbering is a real ordering
 dependency: `30-agent-toolchains` must exist before `40-agent-harnesses` can
-install npm-based agents.
+install npm-based agents, and `45-dsh-plugins` runs after `40-agent-harnesses`
+because it composes the profile with the `dsh` that module installs (and after
+`30-agent-toolchains`, whose `pnpm` it installs the plugin set with).
 
 The pipeline keeps cross-module state in `${STATE_DIR}` (`/run/agent-workspace`),
 which is deleted at the end of the build. `80-manifest` and the build summary in
@@ -112,6 +114,7 @@ itself truthfully.
 | `20-container-tools` | podman, buildah, skopeo, crun, fuse-overlayfs, netavark, aardvark-dns, catatonit, passt, podman-docker (optional containernetworking-plugins, slirp4netns) | enables `podman.socket`, writes root's sub-id range, creates `/etc/containers/registries.conf.d`, warns when `newuidmap` is missing |
 | `30-agent-toolchains` | gcc, gcc-c++, gh, just, make, nodejs, npm, openssl-devel, python3, python3-devel, python3-pip, python3-wheel, pipx, zlib-devel | `pnpm`, `tsx`, `typescript` globally; `uv` in `/usr/local/bin`, installed from the upstream script when the package is unavailable; records the node and python versions |
 | `40-agent-harnesses` | the agents selected in `config/agents.conf` | installs each recipe's CLI and records its binaries, title and credential variable |
+| `45-dsh-plugins` | the default DSH plugin set (`pnpm install --frozen-lockfile`, ~600 MB, store under `/var/cache/agent-workspace/pnpm-store`) | installs `node_modules` for each profile under `/usr/share/agent-workspace/dsh/profiles`, asserts each profile composes (`dsh --dump-config` with no skipped bundle), writes `/usr/share/agent-workspace/dsh/profiles.version`, and records the set's digest in the manifest; the profile's `cordis.patch.yml` ships empty and is never part of a refresh |
 | `50-devtools` | neovim, ripgrep, tmux, tree, zsh, ShellCheck, direnv, fd-find, git-delta, htop, make (optional bat, btop, eza, starship) | symlinks `fd` and `bat` to their conventional names |
 | `60-system-config` | - | enables the firstboot and health units, applies presets, seeds `/etc/skel`, creates `/var/lib/agent-workspace/{cache,sessions}` |
 | `80-manifest` | - | writes `manifest.json` (including `agentBinaries` and `agentCatalog`) and `modules.txt` |
