@@ -1,0 +1,14 @@
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  '@google/genai': true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - dsh-cost-meter@1.8.21 || 1.8.23 || 1.8.26
+  - '@xmanrui/dsh-im@4.38.1'
+  - billion-context@0.1.195 || 0.1.196 || 0.1.197
+  - dsh-dream-skin@10.12.1 || 10.14.3 || 10.15.0
+  - clearai-dsh@0.5.5

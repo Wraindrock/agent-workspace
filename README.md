@@ -179,6 +179,7 @@ Modules run in filename order. Each directory in `build_files/modules/` contains
 | `20-container-tools` | podman, buildah, skopeo, crun, netavark, passt, `podman.socket`, sub-id ranges |
 | `30-agent-toolchains` | gcc/make, gh, just, Node.js + pnpm/tsx/typescript, Python + pipx, uv |
 | `40-agent-harnesses` | the agent CLIs selected in `config/agents.conf` |
+| `45-dsh-plugins` | the default DSH plugin set, installed from a committed lockfile so a container needs no network to load it |
 | `50-devtools` | neovim, ripgrep, tmux, tree, zsh, ShellCheck, direnv, fd-find, git-delta, htop, make (optional bat, btop, eza, starship) |
 | `60-system-config` | systemd units, registries config, profile.d, `/etc/skel` |
 | `80-manifest` | writes the image manifest and module list |
@@ -208,6 +209,47 @@ entries and merges the image's `agentCatalog` over them, so it follows the build
 while still offering the built-ins when the manifest cannot be read.
 
 Adding your own is a small shell function - see [docs/agents.md](docs/agents.md).
+
+### The default DSH plugin set
+
+The image carries this project's default DSH plugins - the set the maintainers run -
+as a finished profile under `/usr/share/agent-workspace/dsh/profiles/web`: the plugin
+list, the workspace settings, the lockfile and a `node_modules` installed at build
+time. The plugins are named in
+[`system_files/usr/share/agent-workspace/dsh/profiles/web/package.json`](system_files/usr/share/agent-workspace/dsh/profiles/web/package.json),
+and what ships is exactly what the committed `pnpm-lock.yaml` resolves to.
+
+DSH reads profiles from the agent's own `$HOME/.dsh`, which lives in the container's
+workspace volume, so the first boot seeds the image's copy into
+`/home/agent/.dsh/profiles/web` - before the completion marker, so the web UI cannot
+start against a home that has no profile. Because this runs again for every new
+container over the same volume, the rules are deliberately narrow:
+
+- a missing profile is seeded; a profile already at the image's plugin set is left
+  completely alone;
+- a profile at an older set is refreshed, and the dependency list, the lockfile and
+  `node_modules` are replaced together;
+- `cordis.patch.yml` is yours: it is written once, on the first seed, and never
+  touched again. Preferences belong there, not in `package.json`;
+- a profile whose files you edited is kept, with a warning naming the directory and
+  the plugin set it differs from. To take the image's set instead, remove
+  `/home/agent/.dsh/profiles/web` inside the container and let the next first boot
+  seed it (`./install.sh upgrade dsh-box`, or a `recover`, `fork` or new `create`).
+
+A build that wants no plugin set at all turns the module off - `45-dsh-plugins=0` in
+`config/modules.conf`, or leave it out of `--build-arg IMAGE_MODULES=...`.
+
+The plugins are third-party npm packages: their lifecycle scripts run as root in the
+image build, and their code runs inside the agent's container afterwards. See
+[SECURITY.md](SECURITY.md). To check what a running container actually has:
+
+~~~bash
+./install.sh enter dsh-box ls /home/agent/.dsh/profiles/web
+./install.sh enter dsh-box cat /home/agent/.dsh/profiles/web/.agent-workspace-profile
+~~~
+
+The second file records the plugin set the profile was seeded from, and the digest of
+every file the image owns in it.
 
 ## Managing containers
 
@@ -365,6 +407,11 @@ shell`) execs the agent CLI as the container's own root user, so the container i
 a security boundary against the agent. A daily
 `agent-workspace-health.timer` runs `agent-workspace doctor --quiet` so drift
 shows up in `journalctl` instead of in a broken agent session.
+
+The same service seeds the image's default DSH plugin set into the agent's home (see
+[The default DSH plugin set](#the-default-dsh-plugin-set)), and it writes its
+completion marker last: whatever fails earlier is reported and then left behind, so
+that a half-provisioned container is never mistaken for a finished one.
 
 ## Interface language
 

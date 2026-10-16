@@ -329,6 +329,50 @@ under `~/.local/share/agent-workspace/containers/<name>/`) means no port is
 published at all. An agent the installer has no web UI for is never given a
 published port in the first place.
 
+### A DSH plugin is missing inside the container
+
+Symptom: the agent's UI or CLI is missing a plugin the image is supposed to ship,
+and `/home/agent/.dsh/profiles/web` does not list it - or DSH logged
+`skipping profile bundle "<name>"` while starting.
+
+Root cause: the image ships its plugin set at
+`/usr/share/agent-workspace/dsh/profiles/web`, and the first boot copies it into the
+agent's home, which lives in the container's volume (see
+[the default DSH plugin set](../README.md#the-default-dsh-plugin-set)). Three things
+leave the volume without it:
+
+- the profile directory exists but was created by DSH itself or edited by hand, so
+  firstboot deliberately keeps it and warns
+  (`kept the existing dsh profile web: this image did not create it`, or
+  `kept the changed dsh profile web: it differs from plugin set <digest>`);
+- the container predates the image that started shipping the set;
+- the build turned the module off (`45-dsh-plugins=0`, or a `--build-arg
+  IMAGE_MODULES=...` without it), in which case `/usr/share/agent-workspace/dsh`
+  does not exist and firstboot logs `this image ships no dsh profiles`.
+
+Where to look, in order:
+
+~~~bash
+./install.sh enter dsh-box ls /home/agent/.dsh/profiles/web
+./install.sh enter dsh-box cat /home/agent/.dsh/profiles/web/.agent-workspace-profile
+./install.sh enter dsh-box cat /usr/share/agent-workspace/dsh/profiles.version
+~~~
+
+The manifest records the plugin set the profile was seeded from; if it is missing, the
+profile is not the image's (or a first boot older than that mechanism seeded it).
+
+Workaround: remove the profile inside the container and let the next first boot seed it
+- `./install.sh enter dsh-box rm -rf /home/agent/.dsh/profiles/web`, then
+`./install.sh upgrade dsh-box` (or a `recover`, `fork` or a new `create` over the same
+volume). Inside a running container, `dsh plugin --profile web add <package>` is DSH's
+own supported way to add a plugin, but it needs network access and is not what the
+image's default set goes through.
+
+Escape hatch: to keep the image's set out of the way while you work on your own
+profile, edit `/home/agent/.dsh/profiles/web/cordis.patch.yml` (firstboot never
+writes it again) or disable individual plugins there; to keep it out of a build
+entirely, set `45-dsh-plugins=0` in `config/modules.conf`.
+
 ### Distrobox and toolbox
 
 The image is not a distrobox or toolbox image, and the project does not target

@@ -304,7 +304,7 @@ for name in dsh opencode claude-code codex gemini-cli aider; do
 done
 
 for name in 00-preflight 10-base-packages 20-container-tools 30-agent-toolchains \
-  40-agent-harnesses 50-devtools 60-system-config 80-manifest 90-cleanup; do
+  40-agent-harnesses 45-dsh-plugins 50-devtools 60-system-config 80-manifest 90-cleanup; do
   if printf '%s\n' "${module_keys}" | grep -qx "${name}"; then
     pass "config/modules.conf still selects ${name}"
   else

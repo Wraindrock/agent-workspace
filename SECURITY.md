@@ -61,6 +61,17 @@ rotation of anything that leaked.
 - **Unqualified container names are permissive.** The registries drop-in enables
   short names so agents can `podman run alpine` without ceremony; if your threat
   model dislikes that, turn it off in `system_files/etc/containers/registries.conf.d/00-agent-workspace.conf`.
+- **The default DSH plugin set is third-party code.** The image ships eleven
+  third-party npm plugins as a pre-installed DSH profile
+  (`build_files/modules/45-dsh-plugins`, sources under
+  `system_files/usr/share/agent-workspace/dsh/profiles/web`). They are pinned by a
+  committed `pnpm-lock.yaml` and installed with `--frozen-lockfile`, so what ships is
+  exactly what the lockfile resolves to - but a lifecycle script runs as root during
+  the image build, and the plugin code then runs inside the agent's container with
+  the agent's privileges. Reviewing a plugin means reviewing that lockfile and the
+  plugins it names. Turn the module off (`45-dsh-plugins=0` in
+  `config/modules.conf`) for a build that should not carry them, and keep in mind
+  that the agent's own `dsh plugin add` installs more of the same, unpinned.
 
 ## Supported versions
 

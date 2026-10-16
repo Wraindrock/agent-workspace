@@ -162,6 +162,7 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 | `20-container-tools` | podman、buildah、skopeo、crun、netavark、passt、`podman.socket`、sub-id 区间 |
 | `30-agent-toolchains` | gcc/make、gh、just、Node.js + pnpm/tsx/typescript、Python + pipx、uv |
 | `40-agent-harnesses` | 依据 `config/agents.conf` 选择安装的 agent CLI |
+| `45-dsh-plugins` | 默认 DSH 插件集，按提交进仓库的 lockfile 在构建期装好，容器无需联网即可加载 |
 | `50-devtools` | neovim、ripgrep、tmux、tree、zsh、ShellCheck、direnv、fd-find、git-delta、htop、make（可选 bat、btop、eza、starship） |
 | `60-system-config` | systemd 单元、registries 配置、profile.d、`/etc/skel` |
 | `80-manifest` | 写出镜像 manifest 与模块清单 |
@@ -177,6 +178,40 @@ agent-workspace manifest | jq '.modules, .agents, .baseImage'
 改成 `1` 就会装进镜像。镜像会把自己支持的 agent 写进 manifest（`agentCatalog`），
 `install.sh` 的菜单以内置 `dsh`、`opencode` 为底、再合并镜像的 `agentCatalog`，
 所以既跟随构建，也在读不到 manifest 时保留内置项。详情见 [docs/agents.md](docs/agents.md)。
+
+### 默认 DSH 插件集
+
+镜像里带着本项目维护者自己在用的那套 DSH 插件，作为一份装好的 profile 放在
+`/usr/share/agent-workspace/dsh/profiles/web`：插件清单、workspace 设置、lockfile，
+以及构建期装好的 `node_modules`。插件名单以
+[`system_files/usr/share/agent-workspace/dsh/profiles/web/package.json`](system_files/usr/share/agent-workspace/dsh/profiles/web/package.json)
+为准，实际装进镜像的就是提交进仓库的 `pnpm-lock.yaml` 解析出的那一份。
+
+DSH 只从 agent 自己的 `$HOME/.dsh` 读取 profile，而该目录位于容器的 workspace 卷里，
+所以首次启动会把镜像里这份播种到 `/home/agent/.dsh/profiles/web`——播种发生在完成标记
+之前，因此 web UI 不会在一个还没有 profile 的家目录上启动。由于每建一个新容器（同一个
+卷）这一步都会再跑一遍，规则刻意收得很窄：
+
+- 缺失就播种；已经是镜像这一版的插件集就完全不动；
+- 记录的是旧版本就整体刷新：依赖清单、lockfile 与 `node_modules` 一起替换；
+- `cordis.patch.yml` 属于你：只在首次播种时写一次，之后永不覆盖，偏好写这里而不是
+  `package.json`；
+- 你改过的 profile 会被原样保留，并给出警告指明目录与它偏离的那一版插件集。想改用镜像
+  这一版，就在容器里删掉 `/home/agent/.dsh/profiles/web`，让下一次首次启动重新播种
+  （`./install.sh upgrade dsh-box`，或 `recover`、`fork`、重建）。
+
+完全不要这套插件集的构建把模块关掉即可：`config/modules.conf` 里写 `45-dsh-plugins=0`，
+或在 `--build-arg IMAGE_MODULES=...` 里不带它。
+
+这些插件都是第三方 npm 包：它们的 lifecycle 脚本在镜像构建期以 root 运行，之后其代码在
+agent 容器里运行。见 [SECURITY.md](SECURITY.md)。想确认某个运行中的容器到底装了什么：
+
+~~~bash
+./install.sh enter dsh-box ls /home/agent/.dsh/profiles/web
+./install.sh enter dsh-box cat /home/agent/.dsh/profiles/web/.agent-workspace-profile
+~~~
+
+后一个文件记录该 profile 是从哪一版插件集播种来的，以及镜像拥有的每个文件的摘要。
 
 ## 管理容器
 
@@ -346,6 +381,10 @@ docs/                    架构、模块、agent、容器、回滚文档
 执行 agent CLI，所以容器对 agent 并不是安全边界。另有每日
 `agent-workspace-health.timer` 运行 `agent-workspace doctor --quiet`，让漂移出现在
 `journalctl` 里，而不是某个 agent 会话的报错里。
+
+同一个服务会把镜像自带的默认 DSH 插件集播种进 agent 的家目录（见
+[默认 DSH 插件集](#默认-dsh-插件集)），并且把完成标记写在最后：之前任何一步失败都只报告、
+不阻断，避免半装好的容器被当成装好的容器。
 
 ## 参与贡献
 

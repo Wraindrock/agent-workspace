@@ -1,0 +1,40 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "@huanx/kilo-zen2dsh": "^0.4.7",
+    "@local/dsh-wrainrock-daemon": "github:Wraindrock/dsh-wrainrock-daemon",
+    "@xmanrui/dsh-im": "4.39.0",
+    "billion-context": "0.1.197",
+    "clearai-dsh": "0.5.5",
+    "dsh-better-sidebar": "0.26.0",
+    "dsh-cost-meter": "1.8.26",
+    "dsh-dream-skin": "10.15.0",
+    "dsh-ian-rules": "github:Wraindrock/dsh-ian-rules",
+    "dsh-music-player": "1.0.3",
+    "dshmarket": "1.66.17"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@deepseek-ai/dsh-experimental-voice-input-bundle",
+        "@deepseek-ai/dsh-experimental-schedule-bundle",
+        "@deepseek-ai/dsh-experimental-auto-review",
+        "@local/dsh-wrainrock-daemon",
+        "dshmarket",
+        "@xmanrui/dsh-im",
+        "@huanx/kilo-zen2dsh",
+        "dsh-cost-meter",
+        "dsh-ian-rules",
+        "@deepseek-ai/dsh-experimental-agent-team-profile",
+        "dsh-better-sidebar",
+        "dsh-music-player",
+        "billion-context",
+        "clearai-dsh",
+        "dsh-dream-skin"
+      ]
+    }
+  }
+}

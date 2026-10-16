@@ -179,6 +179,11 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
   installer/lib/engine.sh installer/lib/state.sh installer/lib/ui.sh \
   installer/lib/agents.sh installer/lib/commands.sh \
   system_files/usr/share/agent-workspace/dsh-web.yml \
+  runtime/lib/dsh-profile.sh \
+  system_files/usr/share/agent-workspace/dsh/profiles/web/package.json \
+  system_files/usr/share/agent-workspace/dsh/profiles/web/pnpm-workspace.yaml \
+  system_files/usr/share/agent-workspace/dsh/profiles/web/pnpm-lock.yaml \
+  system_files/usr/share/agent-workspace/dsh/profiles/web/cordis.patch.yml \
   tests/install.sh tests/fixtures/fake-engine.sh; do
   if [[ -e "$required" ]]; then
     pass "$required"

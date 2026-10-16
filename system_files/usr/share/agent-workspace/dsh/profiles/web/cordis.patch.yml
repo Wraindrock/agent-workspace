@@ -1,0 +1,12 @@
+# Your patch layer for this dsh profile, applied after every bundle layer the
+# plugin set composes -- so an entry here beats the plugins' own defaults.
+#
+# The project ships this file empty on purpose. The plugin set in
+# package.json/pnpm-lock.yaml belongs to the image: an upgrade refreshes it as a
+# unit. This file belongs to you: nothing ever overwrites it, and nothing here
+# is ever refreshed, so preferences (a default model, a theme, ...) belong here
+# rather than in the dependency list.
+#
+# Format: a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+[]

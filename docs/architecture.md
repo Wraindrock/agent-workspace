@@ -111,6 +111,17 @@ Anything a module installs must land in the image; anything the agent produces
 should land in `/home/agent` or `/workspace`, which are the two things a
 `snapshot`, a `rollback` and a `fork` actually carry.
 
+The default DSH plugin set is the one deliberate exception, and it is worth naming
+because it looks like a violation: the plugin set is installed into the image
+(`45-dsh-plugins`, at `/usr/share/agent-workspace/dsh/profiles/web`) but DSH only
+reads profiles from the agent's home, which is in the volume. The set is therefore
+*seeded* into `/home/agent/.dsh/profiles/web` on first boot, and firstboot is where
+the interesting decision lives: seed what is missing, refresh what the image owns
+when the shipped plugin-set digest changes, and leave everything else - above all
+the user's `cordis.patch.yml` - exactly as it is. The image owns the set; the volume
+keeps it; the digest in `/usr/share/agent-workspace/dsh/profiles.version` is what
+lets the two agree across an upgrade. Implementation: `runtime/lib/dsh-profile.sh`.
+
 ## Runtime components
 
 | Component | Path | Role |
@@ -121,6 +132,7 @@ should land in `/home/agent` or `/workspace`, which are the two things a
 | `cmd-status.sh` | `/usr/lib/agent-workspace/` | instance identity: container vs booted system, image, agent user, harnesses |
 | `cmd-doctor.sh` | `/usr/lib/agent-workspace/` | declaration-vs-reality checks |
 | `firstboot.sh` | `/usr/lib/agent-workspace/` | one-shot machine provisioning |
+| `dsh-profile.sh` | `/usr/lib/agent-workspace/` | seeds/refreshes the image's DSH plugin set into the agent's home; sourced by `firstboot.sh` |
 
 The CLI sources its libraries from `${AGENT_WORKSPACE_LIB:-/usr/lib/agent-workspace}`,
 so running it from a checkout is enough to exercise a change:

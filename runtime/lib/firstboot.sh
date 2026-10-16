@@ -19,6 +19,14 @@ if [[ -r "$CONFIG" ]]; then
   . "$CONFIG"
 fi
 
+# The default dsh plugin set that ships in the image, and the logic that
+# decides whether to seed, refresh or leave alone the profile in the agent's
+# home. Sourced after config.env so a deployment can point the two paths
+# elsewhere.
+LIB_DIR="${AGENT_WORKSPACE_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# shellcheck source=/dev/null
+. "${LIB_DIR}/dsh-profile.sh"
+
 log "provisioning user ${AGENT_WORKSPACE_USER}"
 
 if ! id "${AGENT_WORKSPACE_USER}" >/dev/null 2>&1; then
@@ -118,6 +126,21 @@ else
   # Inside a container there is normally no system bus to ask, and systemd's
   # own logind is not the one that would honour the request anyway.
   log "skipped linger for ${AGENT_WORKSPACE_USER}: no system bus in this environment"
+fi
+
+# ---------------------------------------------------------------------------
+# The image's default dsh plugin set.
+#
+# dsh reads profiles from the agent's $HOME/.dsh, which lives in the volume the
+# installer mounts, so the image's copy is seeded here -- before the completion
+# marker below, which is what the container's readiness probe waits for. A
+# failure is counted and reported, never fatal: the marker must still be
+# written, and the agent can create the profile later with `dsh plugin`.
+# ---------------------------------------------------------------------------
+if [[ -n "$home" && -d "$home" ]]; then
+  # shellcheck disable=SC2015
+  seed_dsh_profiles "$home" "${AGENT_WORKSPACE_USER}" ||
+    warn "the image's dsh plugin set was not fully seeded; the agent can install it with: dsh plugin --profile web install"
 fi
 
 # The marker is written last and unconditionally: it is what makes firstboot

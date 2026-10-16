@@ -12,6 +12,26 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Added
 
+- The image now carries this project's default DSH plugin set. New build module
+  `45-dsh-plugins` installs the eleven plugins of a full profile from the committed
+  `pnpm-lock.yaml` at build time - so an agent container loads them with no network -
+  and `runtime/lib/dsh-profile.sh` (sourced by `firstboot.sh`) seeds that profile into
+  the agent's `$HOME/.dsh/profiles/web`, which lives in the workspace volume, before
+  the completion marker the installer's readiness probe waits for. The seeding rules
+  are narrow on purpose, because first boot runs again for every new container over
+  the same volume: seed what is missing, refresh the dependency list, lockfile and
+  `node_modules` as a unit when the image's plugin-set digest changes, and never
+  write anything else - above all not `cordis.patch.yml`, which is the user's.
+  A profile whose own files were edited is kept and reported rather than replaced; one
+  that is byte-identical to the shipped set is adopted so a later set can reach it.
+  The build asserts the set actually composes: `dsh --dump-config` exits 0 even when
+  it has to skip a bundle it cannot resolve (the skip is only a line on stderr), so
+  the module requires that nothing was skipped and that every declared bundle appears
+  in the composed tree - a profile that lists a bundle it does not depend on would
+  otherwise ship a plugin set that silently never loads.
+  `tests/firstboot.sh` asserts the ordering, the shipped shapes and all four seeding
+  decisions; `tests/lint.sh` requires the shipped profile files.
+
 - The installer speaks Simplified Chinese. Messages now come from a keyed catalogue
   (`installer/lib/i18n.sh`) instead of English string literals, and the locale is
   resolved as `LC_ALL` -> `LC_MESSAGES` -> `LANG`, with `AW_LANG_OVERRIDE` to force
