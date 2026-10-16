@@ -19,7 +19,7 @@
 #   image          our OCI image, exported to a rootfs tarball with podman or
 #                  docker and imported into Incus once per image id
 #   labels         incus config keys `user.<label>` (see LABEL_KEY/LABEL_NS)
-#   snapshot       the commit + home-archive path (BACKEND_CAP_COMMIT): an Incus
+#   snapshot       the commit + home-archive path every other backend uses too:
 #                  instance snapshot would not contain the host-directory home,
 #                  so advertising native snapshots here would be a lie.
 #
@@ -33,10 +33,6 @@
 # incus.socket && sudo incus admin init --minimal` - and nothing else.
 # ---------------------------------------------------------------------------
 
-BACKEND_CAP_NATIVE_SNAPSHOT=0
-BACKEND_CAP_VM=0
-BACKEND_CAP_ENV_FILE=1
-BACKEND_CAP_COMMIT=1
 
 : "${ENGINE_BIN:?the Incus backend needs ENGINE_BIN (incus)}"
 
@@ -300,8 +296,8 @@ _incus_home_dir() { printf '%s/%s\n' "$INCUS_HOMES_DIR" "$1"; }
 eng_volume_exists() { [[ -d "$(_incus_home_dir "$1")" ]]; }
 
 eng_volume_create() {
-  _incus_dry mkdir -p -m 0700 -- "$(_incus_home_dir "$1")" && return 0
-  mkdir -p -m 0700 -- "$(_incus_home_dir "$1")"
+  _incus_dry install -d -m 0700 -- "$(_incus_home_dir "$1")" && return 0
+  install -d -m 0700 -- "$(_incus_home_dir "$1")"
 }
 
 eng_volume_remove() {
@@ -328,7 +324,7 @@ eng_volume_restore_archive() {
   local volume="$1" archive="$2" home
   home="$(_incus_home_dir "$volume")"
   _incus_dry tar xzf "$archive" -C "$home" && return 0
-  mkdir -p -m 0700 -- "$home"
+  install -d -m 0700 -- "$home"
   tar xzf "$archive" -C "$home"
 }
 
@@ -339,7 +335,7 @@ eng_volume_clone() {
   from="$(_incus_home_dir "$src")"
   to="$(_incus_home_dir "$dst")"
   _incus_dry cp -a -- "$from/." "$to/" && return 0
-  eng_volume_exists "$dst" || mkdir -p -m 0700 -- "$to"
+  eng_volume_exists "$dst" || install -d -m 0700 -- "$to"
   cp -a -- "$from/." "$to/"
 }
 

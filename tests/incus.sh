@@ -161,11 +161,20 @@ log_count() { grep -cF -- "$1" "$FAKE_INCUS_LOG" || true; }
 
 # --- interface facts -------------------------------------------------------
 echo "interface"
-caps="$(run_backend 'printf "%s %s %s %s|" "$BACKEND_CAP_ENV_FILE" "$BACKEND_CAP_COMMIT" "$BACKEND_CAP_NATIVE_SNAPSHOT" "$BACKEND_CAP_VM"; engine_mount_suffix')" || true
-if [[ "$caps" == "1 1 0 0|" ]]; then
-  pass "capabilities: env file and commit yes, native snapshots and vm no (a host-directory home is not snapshotted by Incus)"
+# The interface is verbs, not capability flags: what a backend cannot do, it does
+# the long way round. An Incus instance snapshot would not contain this
+# workspace's home - it is a host directory, not part of the instance - so the
+# backend must own the commit + home-archive path and must not define a native
+# snapshot verb that would quietly lose the agent's data.
+if run_backend 'declare -F eng_commit >/dev/null && declare -F eng_volume_archive >/dev/null && declare -F eng_volume_restore_archive >/dev/null && declare -F eng_volume_clone >/dev/null && ! declare -F eng_snapshot_create >/dev/null && ! declare -F eng_snapshot_restore >/dev/null' >/dev/null 2>&1; then
+  pass "snapshots go through commit + home archive, and no native-snapshot verb is defined"
 else
-  fail "capabilities are '${caps}', expected '1 1 0 0|'"
+  fail "the incus backend does not define the commit + home-archive snapshot path"
+fi
+if [[ -z "$(run_backend 'engine_mount_suffix')" ]]; then
+  pass "mounts are left to the daemon (no podman-style ':z' suffix)"
+else
+  fail "engine_mount_suffix returned '$(run_backend 'engine_mount_suffix')' for a backend that labels its own mounts"
 fi
 
 # The loader sources this file under `set -euo pipefail`; a bare read that can
@@ -223,7 +232,7 @@ fi
 echo "dry run"
 rm -rf "$(home_dir hom9)"
 out="$(DRY_RUN=1 run_backend 'eng_volume_create hom9' 2>&1)" || true
-if [[ ! -d "$(home_dir hom9)" ]] && [[ "$out" == *"dry-run:"* ]] && [[ "$out" == *"mkdir"* ]]; then
+if [[ ! -d "$(home_dir hom9)" ]] && [[ "$out" == *"dry-run:"* ]] && [[ "$out" == *"homes/hom9"* ]]; then
   pass "a dry run prints the command and creates nothing"
 else
   fail "a dry run changed the host or printed nothing (out: ${out})"

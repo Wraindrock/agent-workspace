@@ -42,7 +42,10 @@ state_engine_soft() {
   [[ -n "$engine" ]] || engine="$ENGINE"
   if command -v "$engine" >/dev/null 2>&1; then
     ENGINE="$engine"
+    # Engine binary is read by the backend file loaded below rather than here;
+    # exporting it keeps that cross-file use (and shellcheck) honest.
     ENGINE_BIN="$engine"
+    export ENGINE_BIN
     # Soft path: an instance recorded by a backend this tree no longer ships is
     # still worth reporting on, so a missing implementation file is not fatal.
     if [[ -r "${BACKEND_DIR}/backend-${engine}.sh" ]]; then

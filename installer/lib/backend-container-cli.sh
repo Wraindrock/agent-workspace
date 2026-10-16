@@ -9,8 +9,6 @@
 # Not a backend on its own: it is never loaded on its own.
 # ---------------------------------------------------------------------------
 
-BACKEND_CAP_ENV_FILE=1
-BACKEND_CAP_COMMIT=1
 
 # The CLI this backend drives (podman or docker), set by the loader.
 : "${ENGINE_BIN:?the container CLI backend needs ENGINE_BIN}"

@@ -30,12 +30,10 @@
 #   eng_logs                    the instance's console log
 #   eng_commit                  freeze a running instance into an image
 #
-# A backend that sets BACKEND_CAP_NATIVE_SNAPSHOT=1 must also define the four
-# eng_snapshot_* verbs (create/list/restore/delete); the installer prefers them
-# over the commit+volume-tar snapshot path when they are available.
-#
-# The installer never branches on the backend's *name*: it calls a verb, or it
-# reads the capability flags the loaded backend sets. `ENGINE` holds the active
+# The installer never branches on the backend's *name*: it calls a verb. What a
+# backend cannot do it does the long way round - Incus, for instance, has no
+# native snapshot for a workspace whose home is a host directory, so it uses the
+# same commit + home-archive path as every other backend. `ENGINE` holds the active
 # backend's name and doubles as the on-disk state key; `ENGINE_BIN` is the
 # command it drives.
 # ---------------------------------------------------------------------------
@@ -44,11 +42,6 @@ ENGINE="${ENGINE:-}"
 ENGINE_BIN="${ENGINE_BIN:-}"
 BACKEND_REQUEST="${BACKEND_REQUEST:-auto}"
 BACKEND_DIR="${BACKEND_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-
-BACKEND_CAP_NATIVE_SNAPSHOT=0
-BACKEND_CAP_VM=0
-BACKEND_CAP_ENV_FILE=0
-BACKEND_CAP_COMMIT=0
 
 # backend_names prints every backend this installer knows, in preference order.
 # Incus leads: a workspace in a system container is the isolation this project
@@ -108,7 +101,7 @@ backend_load() {
 
 # resolve_engine [auto|NAME]: pick a backend, load it and announce it.
 resolve_engine() {
-  local wanted="${1:-auto}" names ready pick="" hint=""
+  local wanted="${1:-auto}" names pick="" hint=""
   names="$(backend_names)"
   if [[ -z "$names" ]]; then
     die_k need_engine
