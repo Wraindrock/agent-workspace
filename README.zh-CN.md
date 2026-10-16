@@ -313,22 +313,24 @@ just verify    # 构建 + 全部容器级测试
 just verify-all # 上述内容再加无需引擎的契约测试
 ~~~
 
-依赖：`podman`（或 `docker`）与 `just`，运行 `install.sh` 另需 bash 4.4+。
-仓库自检在装了 `shellcheck`、`actionlint`、`just`、`python3`+`pyyaml` 时使用它们，
+依赖：任选一个后端——`podman`、`docker` 或 `incus`（见[后端](#后端)）——运行
+`install.sh` 另需 bash 4.4+；构建与自检还需要 `just`。
+仓库自检在装了 `shellcheck`、`actionlint`、`python3`+`pyyaml` 时使用它们，
 没装就跳过；`tests/smoke.sh` 另需 `jq`。CI 只显式安装 `actionlint` 与 `just`，其余
-依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套八个测试
+依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套十一个测试
 脚本：`tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`、`tests/integration.sh`、
 `tests/portability.sh`、`tests/decoupling.sh`、`tests/contract.sh`、
-`tests/firstboot.sh`。其中 `integration` 会通过 `install.sh` 创建真实容器，
+`tests/firstboot.sh`、`tests/bootstrap.sh`、`tests/i18n.sh`、`tests/incus.sh`。
+其中 `integration` 会通过 `install.sh` 创建真实容器，
 `portability` 证明镜像在从未调优过内核参数的宿主上也能启动，两者都需要宿主能用
-rootless podman 启动 systemd；其余四个是静态或 CLI 级测试，不需要引擎、root 与网络。
-所以没有「只在我机器上测过」这种事。
+rootless podman 启动 systemd；其余都是静态或 CLI 级测试（`incus` 用假守护进程），
+不需要引擎、root 与网络。所以没有「只在我机器上测过」这种事。
 
 ## 目录结构
 
 ~~~text
 install.sh               唯一入口：创建 agent 容器的 TUI
-installer/lib/           engine.sh、state.sh、ui.sh、agents.sh、commands.sh
+installer/lib/           engine.sh（后端加载器）、backend-*.sh、state.sh、ui.sh、agents.sh、commands.sh
 image.env                镜像身份与构建参数
 Containerfile            构建契约：context 阶段 + 镜像阶段
 Justfile                 本地构建、镜像检查与发布辅助 recipe
@@ -337,7 +339,7 @@ config/                  声明式开关：modules.conf、agents.conf
 system_files/            原样覆盖到 / 的文件（systemd、profile.d、registries）
 runtime/                 镜像内的 agent-workspace CLI（version、manifest、modules、agents、status、doctor）
 tests/                   lint、install、smoke、integration、portability、
-                         decoupling、contract、firstboot 以及假引擎桩
+                         decoupling、contract、firstboot、bootstrap、i18n、incus 以及假引擎桩
 docs/                    架构、模块、agent、容器、回滚文档
 ~~~
 
@@ -357,6 +359,47 @@ docs/                    架构、模块、agent、容器、回滚文档
 「fetched N files」，它们在目录被拉取之前就要打印；`CONTAINER=`/`NAME` 声明文件格式，
 它是机器可读的；以及 `dry-run` 标签和它打印的引擎命令，那是一条你可以直接复制的 shell 命令。
 
+## 后端
+
+`install.sh` 不直接跟任何一种引擎打交道：它只调用一组固定动词（create、exec、
+logs、copy、remove……），由后端实现。用 `--backend incus|podman|docker` 指定
+（`--engine` 是等价别名）；默认 `auto` 按 **incus、podman、docker** 的顺序取第一个
+能用的。后端会记在容器状态里，已有容器沿用创建时的后端；`install.sh doctor` 会告诉你
+当前用的是哪个。
+
+| 后端 | 工作区是什么 | 备注 |
+| --- | --- | --- |
+| `podman` | 你自己 rootless podman 里的一个容器 | 平常就用它；`--systemd=always`、`:z` 挂载 |
+| `docker` | 你 docker 里的一个容器 | systemd 需要 `--privileged --cgroupns=host`，安装器会加 |
+| `incus` | 一个非特权 Incus 实例 | 镜像先导入守护进程；运行期不从 registry 拉任何东西 |
+
+只有 Incus 后端需要你先在宿主上做一次性准备，而且这一步 `install.sh` 不会替你做
+（装不装 incus、启不启守护进程、存储池与网桥怎么建，都该由宿主决定）：
+
+~~~bash
+sudo systemctl enable --now incus.socket   # 或：sudo systemctl enable --now incus
+sudo incus admin init --minimal            # 建默认存储池与 incusbr0 网桥
+~~~
+
+在那之前 `--backend incus` 会立刻失败并把这两条命令告诉你，而不是创建到一半才报错；
+`auto` 则安静地跳过没响应的守护进程，改用 podman 或 docker。`install.sh` 永远不跑
+`sudo`、不写 `/etc`、也不启动任何守护进程。
+
+Incus 工作区有三点值得知道：
+
+- agent 的 home 是**宿主上的一个目录**
+  （`~/.local/share/agent-workspace/incus/homes/<name>`），不是命名卷，用
+  `shift=true` 挂进实例后属主就是 agent 用户；`backup`、`fork`、`rollback` 都是拷文件，
+  没有 `podman commit`；
+- web UI 由绑在 `127.0.0.1` 的 `proxy` 设备发布，因此端口依然只在回环上；
+- 它是**非特权实例**：容器里的 root 只是你用户的一个 subuid/subgid 映射，和别的后端
+  一样共用宿主内核，**不是虚拟机**。
+
+OCI 镜像不是以镜像引用交给守护进程的：后端先用 `podman`（或 `docker`）导出，
+经 `xz` 管道给 `incus image import`，并按镜像 ID 缓存起来，所以浮动 tag 只有在
+digest 真的变了才会重新导入。每个后端的细节与尚未验证的部分见
+[docs/containers.md](docs/containers.md#backends)。
+
 ## 注意事项
 
 - GHCR 新建 package 时**默认是 private**。本项目的 package 已经设为 public，匿名
@@ -370,6 +413,8 @@ docs/                    架构、模块、agent、容器、回滚文档
   这既是本项目的意义，也是它的边界。
 - `docker` 需要 `--privileged --cgroupns=host` 才能让镜像里的 systemd 当 PID 1；
   安装器会自动加上这些参数，但如果有得选，优先用 `podman`。
+- `incus` 后端需要先做[后端](#后端)里那条一次性宿主准备；在那之前 `auto` 会跳过它。
+  实例是非特权的，容器里的 root 是你的 subuid，而不是宿主 root。
 
 ## 首次开机
 

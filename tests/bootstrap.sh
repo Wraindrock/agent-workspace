@@ -59,6 +59,30 @@ else
   fi
 fi
 
+# 1b. stamping keeps install.sh executable ----------------------------------
+# stamp-install.sh rewrites install.sh through a temp file, and mktemp creates
+# 0600: a plain `mv` then hands install.sh that mode, so `./install.sh` - the
+# incantation the docs use - dies with "Permission denied" while the checksums
+# look perfectly correct. Assert on a real stamp run over a copy of the tree,
+# because the damage only shows after the swap.
+if [[ -x scripts/stamp-install.sh ]]; then
+  stamp_tree="$(mktemp -d)"
+  mkdir -p "${stamp_tree}/scripts" "${stamp_tree}/installer/lib"
+  cp install.sh image.env "${stamp_tree}/"
+  cp -R installer/lib/. "${stamp_tree}/installer/lib/"
+  cp scripts/stamp-install.sh "${stamp_tree}/scripts/stamp-install.sh"
+  chmod 0755 "${stamp_tree}/install.sh"
+  # make the tables stale, so the script really rewrites install.sh
+  sed -i 's/^\( *\[installer\/lib\/engine.sh\]=\).*$/\1"stale"/' "${stamp_tree}/install.sh"
+  if ( cd "${stamp_tree}" && bash scripts/stamp-install.sh >/dev/null 2>&1 ) &&
+     [[ -x "${stamp_tree}/install.sh" ]]; then
+    pass "stamping install.sh keeps it executable"
+  else
+    fail "stamping install.sh drops its executable bit (./install.sh would fail)"
+  fi
+  rm -rf "${stamp_tree}"
+fi
+
 # 2. every bootstrapped file carries a digest for both refs -----------------
 files="$(
   awk '/^BOOTSTRAP_FILES=\(/{f=1;next} f&&/^\)/{exit} f{print}' "$install_sh" |

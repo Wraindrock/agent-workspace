@@ -178,6 +178,8 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
   docs/architecture.md docs/rollback.md docs/containers.md \
   installer/lib/engine.sh installer/lib/state.sh installer/lib/ui.sh \
   installer/lib/agents.sh installer/lib/commands.sh \
+  installer/lib/backend-container-cli.sh installer/lib/backend-podman.sh \
+  installer/lib/backend-docker.sh installer/lib/backend-incus.sh \
   system_files/usr/share/agent-workspace/dsh-web.yml \
   runtime/lib/dsh-profile.sh \
   system_files/usr/share/agent-workspace/dsh/profiles/web/package.json \
@@ -211,11 +213,46 @@ for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd
     fail "installer/lib/commands.sh does not define ${symbol}"
   fi
 done
-for symbol in "run_engine" "engine_run_flags" "detect_engines" "resolve_engine" "eng_host_port"; do
+for symbol in "run_engine" "backend_load" "resolve_engine" "detect_engines" "eng_host_port"; do
   if grep -qE "^${symbol}\(\) \{" installer/lib/engine.sh; then
     pass "installer/lib/engine.sh defines ${symbol}"
   else
     fail "installer/lib/engine.sh does not define ${symbol}"
+  fi
+done
+# The verbs are the backend interface; the container-CLI backends share one
+# implementation, so their verbs must live in backend-container-cli.sh (the
+# per-backend files only override what differs).
+for symbol in "eng_create_persistent" "eng_create_ephemeral" "eng_exec" "eng_exec_test" "eng_exec_background" "eng_exec_capture" "eng_volume_create" "eng_volume_archive" "eng_volume_restore_archive" "eng_volume_clone"; do
+  if grep -qE "^${symbol}\(\)[[:space:]]*\{" installer/lib/backend-container-cli.sh; then
+    pass "installer/lib/backend-container-cli.sh defines ${symbol}"
+  else
+    fail "installer/lib/backend-container-cli.sh does not define ${symbol}"
+  fi
+done
+# The flags that boot systemd differ per container CLI, so each of them owns that
+# one verb; a backend without it cannot create a workspace at all.
+for backend in podman docker; do
+  if grep -qE "^eng_run_flags\(\)[[:space:]]*\{" "installer/lib/backend-${backend}.sh"; then
+    pass "installer/lib/backend-${backend}.sh defines eng_run_flags"
+  else
+    fail "installer/lib/backend-${backend}.sh does not define eng_run_flags"
+  fi
+done
+# Incus is not a container CLI: its instances, images and mounts are daemon
+# objects, so it implements the whole interface itself instead of sourcing the
+# shared file. A backend that is missing one verb would fail deep inside a
+# create/upgrade, so the interface is asserted verb by verb here.
+for symbol in eng_version eng_container_exists eng_container_running eng_container_status \
+  eng_container_image eng_labeled_containers eng_volume_exists eng_image_exists eng_image_id \
+  eng_image_created eng_host_port eng_pull eng_image_remove eng_image_run \
+  eng_create_persistent eng_create_ephemeral eng_start eng_stop eng_remove \
+  eng_volume_create eng_volume_remove eng_exec eng_exec_test eng_exec_capture \
+  eng_exec_background eng_logs eng_commit engine_mount_suffix; do
+  if grep -qE "^${symbol}\(\)[[:space:]]*\{" installer/lib/backend-incus.sh; then
+    pass "installer/lib/backend-incus.sh defines ${symbol}"
+  else
+    fail "installer/lib/backend-incus.sh does not define ${symbol}"
   fi
 done
 # install.sh is the single supported entry point; the bootc disk images and the
@@ -243,7 +280,7 @@ echo "ci coverage"
 # it here: a script CI silently stops running has to fail the lint instead of
 # quietly drifting away from the documentation. Adding a test means adding it to
 # this list *and* to build.yml, in the same change.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh tests/i18n.sh; do
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh tests/i18n.sh tests/incus.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else

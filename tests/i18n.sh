@@ -135,6 +135,16 @@ else
   bad "an unknown key produced text"
 fi
 
+# A message that *starts* with a flag name is a message that `printf` reads as an
+# option: it prints `printf: --: invalid option` and renders nothing, so the user gets
+# a bare "x" from a `die`. The catalogue must survive its own text.
+leading="$(AW_LANG_OVERRIDE=en bash -c 'source installer/lib/i18n.sh >/dev/null 2>&1; tf err_backend_missing podman podman' 2>/dev/null)"
+if [[ "$leading" == "--backend/--engine podman was requested but podman is not installed" ]]; then
+  ok "a message that begins with a flag still renders"
+else
+  bad "a message beginning with '-' rendered as '${leading}' (printf needs --)"
+fi
+
 # Every user-facing message must go through the catalogue. A helper called with an
 # English literal is a message that cannot be translated, and the earlier sweep for
 # these missed install.sh entirely because it only looked at installer/lib/*.sh --
@@ -148,6 +158,28 @@ if [[ -z "$unkeyed" ]]; then
 else
   bad "these messages bypass the catalogue and cannot be translated:
 ${unkeyed}"
+fi
+
+# ... and a key that does not exist is just as silent: `t` yields an empty string
+# for an unknown key, so `die_k err_typo` exits non-zero having printed nothing.
+# That is how a backend error shipped with no message at all. Assert that every
+# key the catalogue helpers are called with actually resolves.
+keys_used="$(grep -rnE '\b(die_k|warn_k|msg_k|ok_k|bad_k|report_ok_k|report_bad_k|heading_k)[[:space:]]+[A-Za-z_][A-Za-z_0-9]*' \
+  install.sh installer/lib/*.sh 2>/dev/null \
+  | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+  | grep -oE '\b(die_k|warn_k|msg_k|ok_k|bad_k|report_ok_k|report_bad_k|heading_k)[[:space:]]+[A-Za-z_][A-Za-z_0-9]*' \
+  | awk '{print $2}' | sort -u || true)"
+missing_keys="$(KEYLIST="${keys_used}" AW_LANG_OVERRIDE=en bash -c '
+  source installer/lib/i18n.sh >/dev/null 2>&1 || exit 1
+  for k in $KEYLIST; do
+    [[ -n "$(t "$k")" ]] || printf "%s " "$k"
+  done
+' 2>/dev/null || true)"
+if [[ -z "$missing_keys" ]]; then
+  ok "every message key the code calls resolves in the catalogue"
+else
+  bad "these message keys are called but not defined (they would print nothing):
+${missing_keys}"
 fi
 
 # The helper sweep above only sees calls that go *through* a message helper. A bare

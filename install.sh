@@ -101,25 +101,37 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 # shellcheck disable=SC2034  # read via the nameref in verify_checksum
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
-  [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="6ddf0272f120c968929f31a47a82c9dc481e48da782f3ed6134204f620ebb3d7"
-  [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
-  [installer/lib/i18n.sh]="5374b8c24eaea9adba6c8d9819d7f41fdd1850b7266d77d198ea43d37c57c367"
-  [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
+  [installer/lib/agents.sh]="ded1984af47e0a7bab18ef4f8e4db4d087225411298e182d483c06f81c4aa029"
+  [installer/lib/backend-container-cli.sh]="bc6cf9f7024f86a5bc100494c3d7ecfe905785f2cc0f4606916c5b051cd38bb2"
+  [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
+  [installer/lib/backend-incus.sh]="e072006333665512fc88dec91703ca39d66f53a704a91c81db01bce646a982b2"
+  [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
+  [installer/lib/commands.sh]="c51852a3f2cf5defd2aa8fb1c83300088399f7379421291dd002f2a76e7e0080"
+  [installer/lib/engine.sh]="7c53c2ba42a458cc00bd7c33be2d625b04709c95db9bb64adafa161646d89858"
+  [installer/lib/i18n.sh]="8fffc7e062001e294e618daad2c96ea45317d5882172c036cfb4e3f783033acf"
+  [installer/lib/state.sh]="aa2a5f9ca239846a19ff2ac7f1a8713090b19efd82660aa3553f5f14ec56a48f"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
-  [installer/lib/agents.sh]="96bd4bcd47e7416eea75a0c702990afb0e0d849bc5377c0b1a93f394bbe3a6cd"
-  [installer/lib/commands.sh]="6ddf0272f120c968929f31a47a82c9dc481e48da782f3ed6134204f620ebb3d7"
-  [installer/lib/engine.sh]="7ba85e7f91e1708ab0372510f5b40e3b9517c1ef214f98fd35754027fe67977d"
-  [installer/lib/i18n.sh]="5374b8c24eaea9adba6c8d9819d7f41fdd1850b7266d77d198ea43d37c57c367"
-  [installer/lib/state.sh]="0ee9d81897eeedf3997cb225add48c990e616a24f38056e6a7f584740c6de0a4"
+  [installer/lib/agents.sh]="ded1984af47e0a7bab18ef4f8e4db4d087225411298e182d483c06f81c4aa029"
+  [installer/lib/backend-container-cli.sh]="bc6cf9f7024f86a5bc100494c3d7ecfe905785f2cc0f4606916c5b051cd38bb2"
+  [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
+  [installer/lib/backend-incus.sh]="e072006333665512fc88dec91703ca39d66f53a704a91c81db01bce646a982b2"
+  [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
+  [installer/lib/commands.sh]="c51852a3f2cf5defd2aa8fb1c83300088399f7379421291dd002f2a76e7e0080"
+  [installer/lib/engine.sh]="7c53c2ba42a458cc00bd7c33be2d625b04709c95db9bb64adafa161646d89858"
+  [installer/lib/i18n.sh]="8fffc7e062001e294e618daad2c96ea45317d5882172c036cfb4e3f783033acf"
+  [installer/lib/state.sh]="aa2a5f9ca239846a19ff2ac7f1a8713090b19efd82660aa3553f5f14ec56a48f"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 BOOTSTRAP_FILES=(
   image.env
   installer/lib/agents.sh
+  installer/lib/backend-container-cli.sh
+  installer/lib/backend-docker.sh
+  installer/lib/backend-incus.sh
+  installer/lib/backend-podman.sh
   installer/lib/commands.sh
   installer/lib/engine.sh
   installer/lib/i18n.sh
@@ -267,6 +279,7 @@ SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 AGENT_USER="agent"
 IMAGE=""
 ENGINE_REQUEST="auto"
+BACKEND_REQUEST="auto"
 
 # The agent web UI is published on the host loopback only. These knobs are read
 # by the library functions (installer/lib/commands.sh); see ./install.sh web NAME.
@@ -833,19 +846,19 @@ require_engine() {
       warn_k warn_no_engine_dry
       ENGINE="podman"
       ENGINE_BIN="podman"
+      backend_load "$ENGINE"
       return 0
     fi
     die_k need_engine
   fi
-  resolve_engine "${ENGINE_REQUEST:-auto}"
-  msg_k engine_line "${ENGINE}" "$(eng_version)"
+  resolve_engine "${BACKEND_REQUEST:-${ENGINE_REQUEST:-auto}}"
 }
 
 parse_args() {
   while [[ "${#}" -gt 0 ]]; do
     case "${1}" in
-      --engine) ENGINE_REQUEST="${2}"; shift 2 ;;
-      --engine=*) ENGINE_REQUEST="${1#*=}"; shift ;;
+      --backend|--engine) BACKEND_REQUEST="${2}"; ENGINE_REQUEST="${2}"; shift 2 ;;
+      --backend=*|--engine=*) BACKEND_REQUEST="${1#*=}"; ENGINE_REQUEST="${1#*=}"; shift ;;
       --image) IMAGE="${2}"; UPGRADE_IMAGE="${2}"; shift 2 ;;
       --image=*) IMAGE="${1#*=}"; UPGRADE_IMAGE="${1#*=}"; shift ;;
       --no-tui) NO_TUI=1; shift ;;

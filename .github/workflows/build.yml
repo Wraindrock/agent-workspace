@@ -216,6 +216,12 @@ jobs:
       - name: interface language contract
         run: bash tests/i18n.sh
 
+      # The Incus backend speaks a different CLI than the container-CLI backends
+      # and one of its verbs imports a rootfs into a daemon, so it gets its own
+      # fake-daemon test: nothing here needs incus, root or a network.
+      - name: incus backend contract
+        run: bash tests/incus.sh
+
       # ------------------------------------------------------------------
       # Everything below only runs for a merged or scheduled build.
       # ------------------------------------------------------------------

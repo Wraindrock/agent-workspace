@@ -397,7 +397,7 @@ is "list exits 0" 0 "$RUN_STATUS"
 contains "list shows the container" box1 "$RUN_OUT"
 contains "list shows the stopped state" stopped "$RUN_OUT"
 contains "list shows the agent" dsh "$RUN_OUT"
-contains "list warns about the engine choice" "both podman and docker are installed" "$RUN_OUT"
+contains "list warns about the engine choice" "more than one backend is installed" "$RUN_OUT"
 run start box1
 is "start exits 0" 0 "$RUN_STATUS"
 is "start starts the container" running "$(fake_state box1)"
@@ -854,7 +854,12 @@ is "the docker container runs" running "$(fake_state dbox)"
 contains "docker containers get cgroup mounts" "--cgroupns=host" "$(engine_log)"
 run_installer "$DOCKER_ONLY_PATH" --engine podman doctor
 is "requesting a missing engine fails" 1 "$RUN_STATUS"
-contains "the missing engine is reported" "--engine podman was requested but podman is not installed" "$RUN_OUT"
+contains "the missing engine is reported" "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
+# `--backend` is the same flag under its newer name: the refusal has to name both,
+# because either one may be the flag the user typed.
+run_installer "$DOCKER_ONLY_PATH" --backend podman doctor
+is "--backend is accepted as the same flag" 1 "$RUN_STATUS"
+contains "the refusal names both spellings" "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
 run_installer "$DOCKER_ONLY_PATH" remove dbox --yes
 is "a docker container can be removed" 0 "$RUN_STATUS"
 missing "the docker container state is gone" "$(data)/containers/dbox"
@@ -863,7 +868,7 @@ is "--help-agents works without an engine" 0 "$RUN_STATUS"
 contains "--help-agents lists the built-in agents" "dsh" "$RUN_OUT"
 run_installer "$BIN_NOSH" create --agent dsh --name engineless --yes
 is "creating without an engine fails" 1 "$RUN_STATUS"
-contains "the missing engine is reported when there is none" "neither podman nor docker" "$RUN_OUT"
+contains "the missing engine is reported when there is none" "neither incus, podman nor docker" "$RUN_OUT"
 
 # =========================================================================
 echo "create (container that does not stay up)"

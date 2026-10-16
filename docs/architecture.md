@@ -232,7 +232,8 @@ dispatches, and one library per concern does the work.
 | Library | Role |
 | --- | --- |
 | `installer/lib/ui.sh` | the gum TUI (the menu needs gum and a terminal); individual prompts fall back to plain `read` when gum is missing |
-| `installer/lib/engine.sh` | podman/docker detection, the per-engine run flags, and a dry-run mode that prints commands instead of running them |
+| `installer/lib/engine.sh` | the backend loader: detection and the ready check for each backend, the `auto` order (incus, podman, docker), the verb dispatching and a dry-run mode that prints commands instead of running them |
+| `installer/lib/backend-*.sh` | one file per backend - `backend-container-cli.sh` is the shared podman/docker implementation, `backend-podman.sh` and `backend-docker.sh` own the flags that boot systemd, `backend-incus.sh` implements the whole interface against `incus` |
 | `installer/lib/state.sh` | where host state lives: `meta`, snapshots, and credential files |
 | `installer/lib/agents.sh` | the agent catalog, read from the image manifest and merged over the built-in table |
 | `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `restart`, `enter`, `shell`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`, `upgrade`, `web`, `remove`, `doctor` |

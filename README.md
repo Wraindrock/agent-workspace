@@ -359,14 +359,16 @@ just verify    # build + every container-level test
 just verify-all # the above plus the engine-free contract tests
 ~~~
 
-Requirements: `podman` (or `docker`) and `just`, plus `bash` 4.4+ for `install.sh`.
-The lint uses `shellcheck`, `actionlint`, `just` and `python3` + `pyyaml` when they
-are present and skips them when they are not; `tests/smoke.sh` separately needs `jq`.
-CI installs `actionlint` and `just` explicitly, and relies on the runner image for
-`shellcheck`, `jq` and `python3`. Every pull request runs the same eight test
-scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
+Requirements: one backend - `podman`, `docker` or `incus` (see
+[Backends](#backends)) - plus `bash` 4.4+ for `install.sh`. Building and linting
+additionally want `just`; the lint uses `shellcheck`, `actionlint` and `python3` +
+`pyyaml` when they are present and skips them when they are not; `tests/smoke.sh`
+separately needs `jq`. CI installs `actionlint` and `just` explicitly, and relies on
+the runner image for `shellcheck`, `jq` and `python3`. Every pull request runs the
+same eleven test scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
 `tests/integration.sh`, `tests/portability.sh`, `tests/decoupling.sh`,
-`tests/contract.sh` and `tests/firstboot.sh`. `tests/integration.sh` creates a real
+`tests/contract.sh`, `tests/firstboot.sh`, `tests/bootstrap.sh`, `tests/i18n.sh` and
+`tests/incus.sh`. `tests/integration.sh` creates a real
 container through `install.sh`, and `tests/portability.sh` proves the image boots
 on a host whose kernel settings were never tuned; both need a host where rootless
 podman can boot systemd (see
@@ -431,6 +433,54 @@ guard and the bootstrap's "fetched N files" line, which are printed before the c
 fetched; the `CONTAINER=`/`NAME` declaration-file format, which is machine-readable; and the
 `dry-run` label with the engine command it prints, which is a shell command you may copy verbatim.
 
+## Backends
+
+`install.sh` does not talk to an engine directly: it calls a small set of verbs
+(create, exec, logs, copy, remove, ...) and a backend implements them. Pick one with
+`--backend incus|podman|docker` (`--engine` is an accepted alias). The default,
+`auto`, takes the first backend that answers, in the order **incus, podman, docker**.
+The backend is recorded per container, so an existing container keeps the backend it
+was created with; `install.sh doctor` says which one is in use.
+
+| backend | what the workspace is | notes |
+| --- | --- | --- |
+| `podman` | a container in your rootless podman | the usual choice; `--systemd=always`, `:z` mounts |
+| `docker` | a container in your docker | needs `--privileged --cgroupns=host` for systemd; the installer adds them |
+| `incus` | an unprivileged Incus *instance* | the image is imported into the daemon first; nothing pulls from a registry at run time |
+
+The Incus backend is the only one that needs a host-level step first, and it is the
+one step `install.sh` will not take for you (`incus` has to be installed, its daemon
+running and its storage/bridge initialised - that is a host decision, not an
+installer side effect):
+
+~~~bash
+sudo systemctl enable --now incus.socket   # or: sudo systemctl enable --now incus
+sudo incus admin init --minimal            # default storage pool + incusbr0 bridge
+~~~
+
+Until then `--backend incus` fails immediately with those two commands instead of
+failing halfway through a create, and `auto` quietly skips the daemon that is not
+answering and uses podman or docker. `install.sh` never runs `sudo`, never writes
+under `/etc` and never starts a daemon.
+
+An Incus workspace differs from a container in three ways worth knowing:
+
+- the agent's home is a **directory on this host** -
+  `~/.local/share/agent-workspace/incus/homes/<name>` - not a named volume, mounted
+  with `shift=true` so the agent user owns it inside the instance. `backup`, `fork`
+  and `rollback` copy files; there is no `podman commit` involved;
+- the web UI is published by a `proxy` device bound to `127.0.0.1`, so the port stays
+  loopback-only the same way it does with `--publish 127.0.0.1:...`;
+- the workspace is an **unprivileged instance**: its root is a sub-uid/sub-gid
+  mapping of your user rather than host root, and like every other backend here it
+  shares your kernel and is **not** a virtual machine.
+
+The OCI image never reaches the daemon as an image reference: the backend exports it
+with `podman` (or `docker`, whichever is present), pipes the rootfs through
+`xz` and `incus image import`, and caches the result under the image ID, so a moving
+tag re-imports only when its digest actually changed. `docs/containers.md` has the
+per-backend details and what is still unverified.
+
 ## Notes and limitations
 
 - GHCR creates a new package **private**. This project's package is public, so
@@ -446,6 +496,9 @@ fetched; the `CONTAINER=`/`NAME` declaration-file format, which is machine-reada
   rootless podman or docker; that is the whole point, and it is also the boundary.
 - `docker` needs `--privileged --cgroupns=host` for the image's systemd to be PID 1.
   The installer adds those flags for you; prefer `podman` when you have the choice.
+- The `incus` backend needs the one-time host step in [Backends](#backends) before it
+  can be used; `auto` skips it until then. Its instance is unprivileged, so the
+  container's root is a sub-uid of yours rather than host root.
 - Booting systemd in a container needs host kernel headroom. The kernel charges
   inotify instances per *user* (`fs.inotify.max_user_instances`, 128 by default),
   a desktop session spends most of that budget, and once it is gone the container

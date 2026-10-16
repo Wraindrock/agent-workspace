@@ -86,6 +86,10 @@ replace_table() {
     skipping { next }
     { print }
   ' "$install_sh" > "$tmp"
+  # mktemp creates 0600, and moving it over install.sh would carry that mode
+  # with it - install.sh would silently lose its executable bit, which is what
+  # the docs rely on when they say `./install.sh`. Carry the original mode over.
+  chmod --reference="$install_sh" "$tmp" 2>/dev/null || chmod 0755 "$tmp"
   mv "$tmp" "$install_sh"
 }
 

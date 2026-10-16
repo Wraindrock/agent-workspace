@@ -42,6 +42,16 @@ rotation of anything that leaked.
   `docker` engine path needs for systemd), reaches the host. Use `podman`
   (rootless) when the agent is not fully trusted, and prefer a virtual machine
   when the boundary must be hard.
+- **The `incus` backend hands the workspace to a host daemon.** With `--backend
+  incus` - or in `auto` mode whenever the daemon answers before podman does - the
+  workspace is an unprivileged Incus instance: `incusd` owns its lifecycle, its disk
+  devices and its `proxy` device. The host-level setup that makes the daemon usable
+  (`sudo systemctl enable --now incus.socket`, `sudo incus admin init --minimal`) is
+  deliberately left to you: `install.sh` never runs `sudo`, never writes under `/etc`
+  and never starts a daemon. The instance's root is a sub-uid/sub-gid of your user,
+  so container root is not host root, exactly as with the container backends; agent
+  credentials reach the daemon on stdin (`config set <name> environment.KEY -`)
+  instead of on a command line, so they stay out of `ps` and the shell history.
 - **Inside the container, nothing confines the agent.** `install.sh enter` and
   `shell` `exec` into the container as its default user, which is root: this
   installer never creates a container with `--user`. Only the web UI drops to the

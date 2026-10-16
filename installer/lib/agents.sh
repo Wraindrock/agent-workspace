@@ -61,10 +61,10 @@ agent_launch_command() {
 
 # image_agents prints "name<TAB>binaries<TAB>title<TAB>env" for the image.
 image_agents() {
-  [[ -n "${ENGINE_BIN:-}" ]] || return 0
+  [[ -n "${ENGINE:-}" ]] || return 0
   [[ -n "${IMAGE:-}" ]] || return 0
   eng_image_exists "$IMAGE" || return 0
-  "$ENGINE_BIN" run --rm --entrypoint /usr/bin/jq "$IMAGE" -r '
+  eng_image_run "$IMAGE" /usr/bin/jq -r '
     (.agentCatalog // {}) | to_entries[] |
     [.key, ((.value.binaries // []) | join(" ")), (.value.title // .key), ((.value.env // []) | join(" "))] | @tsv
   ' /usr/share/agent-workspace/manifest.json 2>/dev/null || true

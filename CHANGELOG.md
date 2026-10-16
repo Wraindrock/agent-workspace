@@ -12,6 +12,19 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Added
 
+- `install.sh` now selects its container backend instead of assuming podman:
+  `--backend incus|podman|docker` (alias `--engine`), with `auto` taking the first
+  backend that answers in the order incus, podman, docker. `installer/lib/engine.sh`
+  became a loader over `installer/lib/backend-*.sh`, each implementing the same verb
+  set (create, exec, logs, copy, snapshot, remove, ...) so the installer never
+  branches on a backend name. A container remembers the backend it was created with.
+  The `incus` backend is new: it imports the OCI image into the daemon
+  (`podman export` piped through `xz` into `incus image import`, cached by image ID),
+  runs an unprivileged instance with the agent home as a host directory and the web
+  UI behind a `proxy` device on `127.0.0.1`, and passes credentials over stdin. Its
+  daemon setup is a documented one-time host step the installer never performs. New
+  `tests/incus.sh` drives a fake `incus` and asserts the verbs, the image pipeline
+  and that no credential reaches a command line.
 - The image now carries this project's default DSH plugin set. New build module
   `45-dsh-plugins` installs the eleven plugins of a full profile from the committed
   `pnpm-lock.yaml` at build time - so an agent container loads them with no network -

@@ -255,6 +255,50 @@ that the host port is still published. It never changes anything; it is the chec
 run before you need a rollback. `--strict` exits non-zero when anything is
 wrong, which is what the test suite uses.
 
+## Backends
+
+`install.sh` calls a fixed set of verbs (create, exec, logs, copy, remove, ...) and a
+backend implements them, so the lifecycle, backup, fork and rollback commands behave
+the same whichever one you use. In `auto` mode the order is **incus, podman,
+docker**; `--backend NAME` (alias `--engine`) pins one, and the choice is stored per
+container so an existing container keeps the backend it was created with.
+
+| | podman / docker | incus |
+| --- | --- | --- |
+| what the workspace is | container in your rootless podman / docker | unprivileged Incus instance (daemon-owned) |
+| agent home | named volume | host directory `~/.local/share/agent-workspace/incus/homes/<name>` |
+| project directory | bind mount with `:z` | `disk` device with `shift=true` |
+| web UI | `--publish 127.0.0.1:<port>:3080` | `proxy` device on `127.0.0.1` |
+| image | `pull` (and `commit` for a snapshot image) | `podman export` piped through `xz` into `incus image import`, cached by image ID |
+| fork / rollback | volume archives | `incus copy` plus home copies |
+| ready check | `<cli> --version` answers | `incus info` answers (the daemon is up) |
+
+The Incus daemon has to be initialised once by you, as root - `install.sh` never runs
+`sudo`, never writes under `/etc` and never starts a daemon:
+
+~~~bash
+sudo systemctl enable --now incus.socket
+sudo incus admin init --minimal
+~~~
+
+Until that is done the two messages you can see are:
+
+~~~text
+backend incus is installed but not usable yet: <what incus said>
+--backend/--engine incus was requested but incus is not installed
+~~~
+
+The first one is the "installed but not ready" case (the error adds the two commands
+above); the second is `--backend incus` on a host without the package. Plain `auto`
+prints neither: it falls through to podman or docker.
+
+**Verified against a real daemon:** nothing in CI, because the runner has no Incus -
+`tests/incus.sh` drives a fake `incus` that logs its argv, and asserts the pipeline
+(image import with `--alias`, disk devices, the proxy device, credentials over
+stdin, exec/logs/commit/remove) verb by verb. Treat the Incus backend as
+**experimental until the first report of a real create**: the verbs listed above are
+asserted at the command level, not against `incusd`.
+
 ## Troubleshooting
 
 ### A container exits immediately, or a systemd container stops mid-boot

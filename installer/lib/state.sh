@@ -177,7 +177,7 @@ snapshot_delete() {
     return 1
   fi
   if eng_image_exists "$image"; then
-    if ! run_engine rmi "$image" >/dev/null 2>&1; then
+    if ! eng_image_remove "$image" >/dev/null 2>&1; then
       warn_k image_undeletable "${image}" "${id}"
       return 1
     fi

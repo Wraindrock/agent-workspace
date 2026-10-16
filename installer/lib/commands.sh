@@ -43,6 +43,11 @@ state_engine_soft() {
   if command -v "$engine" >/dev/null 2>&1; then
     ENGINE="$engine"
     ENGINE_BIN="$engine"
+    # Soft path: an instance recorded by a backend this tree no longer ships is
+    # still worth reporting on, so a missing implementation file is not fatal.
+    if [[ -r "${BACKEND_DIR}/backend-${engine}.sh" ]]; then
+      backend_load "$engine"
+    fi
   fi
 }
 
@@ -64,7 +69,7 @@ ensure_image() {
   if [[ "$ref" == *"@sha256:"* ]] || [[ "$ref" == localhost/* ]]; then
     eng_image_exists "$ref" && return 0
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-      run_engine pull "$ref"
+      eng_pull "$ref"
       return 0
     fi
     [[ "${NO_PULL:-0}" -eq 1 ]] && die_k err_image_missing "${ref}"
@@ -77,17 +82,23 @@ ensure_image() {
   fi
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
     # A dry run does not touch the registry, but it does say what a real run does.
-    run_engine pull "$ref"
+    eng_pull "$ref"
     return 0
   fi
   refresh_image "$ref"
 }
 
 pull_image() {
+  # A dry run does not touch the registry, but eng_pull still says what a real
+  # run would do, so the spinner is bypassed rather than swallowing that line.
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    eng_pull "$1"
+    return 0
+  fi
   if [[ -n "${GUM_BIN:-}" ]]; then
-    ui_spin "$(tf pulling "${1}")" "$ENGINE_BIN" pull "$1"
+    ui_spin "$(tf pulling "${1}")" eng_pull "$1"
   else
-    "$ENGINE_BIN" pull "$1"
+    eng_pull "$1"
   fi
 }
 
@@ -135,7 +146,7 @@ confirm() {
 # create_container_from NAME AGENT MODE WORKSPACE IMAGE_REF [DECLARED_IMAGE]
 create_container_from() {
   local name="${1}" agent="${2}" mode="${3}" workspace="${4}" image_ref="${5}" declared="${6:-${5}}"
-  local env_file volume web web_port
+  local env_file volume web web_port publish_port=""
   env_file="$(env_file_for "$name")"
   volume="$(volume_name "$name")"
 
@@ -170,25 +181,14 @@ create_container_from() {
     web_port=""
   fi
 
+  if [[ "$web" == "1" && -n "$web_port" ]]; then
+    publish_port="$web_port"
+  fi
+
   case "$mode" in
     persistent)
-      eng_volume_exists "$volume" || run_engine volume create "$volume" >/dev/null
-      local -a args=(run --name "$name" --hostname "$name")
-      local flag
-      while IFS= read -r flag; do args+=("$flag"); done < <(engine_run_flags)
-      args+=(--label "${LABEL_KEY}=${LABEL_VALUE}")
-      args+=(--label "${LABEL_NS}.agent=$agent")
-      args+=(--label "${LABEL_NS}.mode=$mode")
-      args+=(--volume "${volume}:/home/${AGENT_USER}")
-      args+=(--volume "${workspace}:/workspace$(engine_mount_suffix)")
-      args+=(--workdir /workspace)
-      args+=(--env "AGENT_WORKSPACE_AGENT=$agent")
-      [[ -f "$env_file" ]] && args+=(--env-file "$env_file")
-      if [[ "$web" == "1" && -n "$web_port" ]]; then
-        args+=(--publish "127.0.0.1:${web_port}:${WEB_CONTAINER_PORT:-3080}")
-      fi
-      args+=("$image_ref")
-      run_engine "${args[@]}"
+      eng_volume_exists "$volume" || eng_volume_create "$volume" >/dev/null
+      eng_create_persistent "$name" "$image_ref" "$volume" "$workspace" "$env_file" "$publish_port" "$agent"
       if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
         # Wait for the container to reach "running" instead of trusting that it
         # did: a container that exits on start (a dangling /home, an image whose
@@ -198,7 +198,7 @@ create_container_from() {
         until eng_container_running "$name"; do
           if [[ "${waited}" -ge "${timeout}" ]]; then
             warn_k err_did_not_stay_up "${name}"
-            "$ENGINE_BIN" logs --tail 20 "$name" 2>/dev/null || true
+            eng_logs "$name" 20 || true
             die_k err_not_running "${name}"
           fi
           sleep 1
@@ -210,19 +210,7 @@ create_container_from() {
       if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
         warn_k warn_web_port_ephemeral
       fi
-      local -a eargs=(run --rm --name "$name" --hostname "$name")
-      if [[ -t 0 ]] && [[ -t 1 ]]; then
-        eargs+=(--interactive --tty)
-      fi
-      eargs+=(--label "${LABEL_KEY}=${LABEL_VALUE}")
-      eargs+=(--label "${LABEL_NS}.agent=$agent")
-      eargs+=(--label "${LABEL_NS}.mode=$mode")
-      eargs+=(--volume "${workspace}:/workspace$(engine_mount_suffix)")
-      eargs+=(--workdir /workspace)
-      eargs+=(--env "AGENT_WORKSPACE_AGENT=$agent")
-      [[ -f "$env_file" ]] && eargs+=(--env-file "$env_file")
-      eargs+=("$image_ref" "$(agent_launch_command "$agent")")
-      run_engine "${eargs[@]}"
+      eng_create_ephemeral "$name" "$image_ref" "$workspace" "$env_file" "$agent" "$(agent_launch_command "$agent")"
       ;;
     *)
       die_k err_unknown_mode "${mode}"
@@ -339,14 +327,13 @@ cmd_restart() {
 }
 
 cmd_logs() {
-  local name="${1}"
+  local name="${1}" follow=0
   require_container "$name"
   state_engine "$name"
   if [[ "${LOGS_FOLLOW:-0}" -eq 1 ]]; then
-    run_engine logs --tail "${LOGS_TAIL:-50}" --follow "$name"
-  else
-    run_engine logs --tail "${LOGS_TAIL:-50}" "$name"
+    follow=1
   fi
+  eng_logs "$name" "${LOGS_TAIL:-50}" "$follow"
 }
 
 cmd_enter() {
@@ -388,7 +375,7 @@ agent_web_command() {
 # which is guaranteed to be in the image.
 container_web_up() {
   local name="${1}" port="${2}"
-  "$ENGINE_BIN" exec "$name" /bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1
+  eng_exec_test "$name" /bin/bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}"
 }
 
 # web_ui_start NAME starts the agent's web UI inside a running container, waits
@@ -417,13 +404,13 @@ web_ui_start() {
   fi
 
   if [[ "$running" -eq 0 ]]; then
-    run_engine exec --detach --user "$AGENT_USER" --env "HOME=/home/${AGENT_USER}" "$name" \
-      /bin/bash -c "install -d -m 0700 ${log_dir} && : >${log_file} && exec ${webcmd} >>${log_file} 2>&1"
+    eng_exec_background "$name" "$AGENT_USER" \
+      "install -d -m 0700 ${log_dir} && : >${log_file} && exec ${webcmd} >>${log_file} 2>&1"
   fi
 
   token=""
   for ((i = 0; i < 20; i++)); do
-    token="$("$ENGINE_BIN" exec "$name" /bin/bash -c "grep -o 'token=[A-Za-z0-9_-]*' ${log_file} 2>/dev/null | tail -n 1 | cut -d= -f2" 2>/dev/null || true)"
+    token="$(eng_exec_capture "$name" /bin/bash -c "grep -o 'token=[A-Za-z0-9_-]*' ${log_file} 2>/dev/null | tail -n 1 | cut -d= -f2")"
     [[ -n "$token" ]] && break
     sleep 1
   done
@@ -446,7 +433,7 @@ web_ui_start() {
 wait_agent_ready() {
   local name="${1}" timeout="${2:-${CONTAINER_FIRSTBOOT_TIMEOUT:-180}}" waited=0
   while [[ "$waited" -lt "$timeout" ]]; do
-    if "$ENGINE_BIN" exec "$name" /bin/bash -c 'test -f /var/lib/agent-workspace/.provisioned' >/dev/null 2>&1; then
+    if eng_exec_test "$name" /bin/bash -c 'test -f /var/lib/agent-workspace/.provisioned'; then
       return 0
     fi
     eng_container_running "$name" || return 1
@@ -499,8 +486,7 @@ cmd_web() {
   [[ -n "$port" ]] || die_k err_web_no_port "${name}" "${name}"
 
   if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-    printf 'dry-run: %s exec --detach --user %s --env HOME=/home/%s %s /bin/bash -c %q\n' \
-      "$ENGINE_BIN" "$AGENT_USER" "$AGENT_USER" "$name" "$(agent_web_command "$agent")"
+    eng_exec_background "$name" "$AGENT_USER" "$(agent_web_command "$agent")"
     printf '%s\n' "$(tf dry_url "$port")"
     return 0
   fi
@@ -540,8 +526,7 @@ archive_home_volume() {
     warn_k snap_no_volume "${volume}"
     return 0
   fi
-  if run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data:ro" \
-      --volume "${dir}:/backup$(engine_mount_suffix)" "$image" czf /backup/home.tar.gz -C /data .; then
+  if eng_volume_archive "$volume" "$dir" "$image"; then
     if home_archive_ok "${dir}/home.tar.gz"; then
       ok_k snap_archived "${dir}"
     else
@@ -566,11 +551,7 @@ restore_home_volume() {
     die_k snap_archive_bad "${id}" "${dir}"
   fi
   entries="$(tar -tzf "${dir}/home.tar.gz" 2>/dev/null | grep -c . || true)"
-  if ! eng_volume_exists "$volume"; then
-    run_engine volume create "$volume" >/dev/null
-  fi
-  run_engine run --rm --entrypoint /usr/bin/tar --volume "${volume}:/data" \
-    --volume "${dir}:/backup$(engine_mount_suffix)" "$image" xzf /backup/home.tar.gz -C /data
+  eng_volume_restore_archive "$volume" "${dir}/home.tar.gz" "$image"
   ok_k home_restored "${id}" "${entries:-0}"
 }
 
@@ -759,19 +740,16 @@ cmd_fork() {
 
   new_volume="$(volume_name "$new")"
   eng_volume_exists "$new_volume" && die_k err_volume_exists "${new_volume}"
-  run_engine volume create "$new_volume" >/dev/null
+  eng_volume_create "$new_volume" >/dev/null
 
   if [[ -n "$snap" ]] && [[ -s "$(snapshot_path "$src" "$snap")/home.tar.gz" ]]; then
     msg_k forking_copy_snap "${snap}"
-    run_engine run --rm --entrypoint /usr/bin/tar --volume "${new_volume}:/data" \
-      --volume "$(snapshot_path "$src" "$snap"):/backup$(engine_mount_suffix)" "$image" \
-      xzf /backup/home.tar.gz -C /data
+    eng_volume_restore_archive "$new_volume" "$(snapshot_path "$src" "$snap")/home.tar.gz" "$image"
   else
     src_volume="$(container_home_volume "$src")"
     if eng_volume_exists "$src_volume"; then
       msg_k forking_copy_live "${src_volume}"
-      run_engine run --rm --entrypoint /bin/bash --volume "${src_volume}:/from:ro" --volume "${new_volume}:/to" \
-        "$image" -c 'cd /from && tar cf - . | tar xf - -C /to'
+      eng_volume_clone "$src_volume" "$new_volume" "$image"
     fi
   fi
 

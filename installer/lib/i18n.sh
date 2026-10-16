@@ -138,7 +138,7 @@ t() {
         snapshotted)          value="快照已创建" ;;
         rolled_back)          value="已回滚" ;;
         nothing_changed)      value="没有任何改动" ;;
-        need_engine)          value="没有找到 podman 或 docker；请先安装其中一个" ;;
+        need_engine)          value="没有找到 incus、podman 或 docker；请先安装其中一个" ;;
         gum_skipped)          value="改用普通提示继续" ;;
         # --- piped, no terminal -------------------------------------------
         pipe_no_tui)          value="install.sh：没有任何改动 —— 本次是非交互运行，无法启动交互式 TUI（stdin 是管道里的脚本）。" ;;
@@ -162,6 +162,13 @@ t() {
         err_not_running)      value="容器 %s 没有在运行（排障见 docs/containers.md#troubleshooting）" ;;
         err_not_running_try)  value="容器 %s 没有在运行（试试：%s）" ;;
         err_unknown_mode)     value="未知模式 '%s'（应为 persistent 或 ephemeral）" ;;
+        err_backend_not_ready) value="后端 %s 已安装但还不能用：%s" ;;
+        err_backend_missing)  value="请求了后端 %s，但它没有安装" ;;
+        err_no_backend_impl)  value="没有后端 %s 的实现文件（期望 %s）" ;;
+        err_incus_helper)     value="Incus 不能直接拉取 OCI 镜像：需要 podman 或 docker（以及 xz）把 %s 导出成 rootfs 再导入" ;;
+        err_incus_image_missing) value="镜像 %s 还没有导入 Incus；先跑 ./install.sh pull（create/upgrade 也会顺手拉）" ;;
+        err_incus_env)        value="把环境变量 %s 写进 Incus 实例失败" ;;
+        err_incus_env_verify) value="Incus 实例没有存下环境变量 %s 的值（写入与读回不一致，已中止，避免无凭据地启动）" ;;
         err_ephemeral_enter)  value="容器 %s 是 ephemeral 模式创建的，无法进入" ;;
         err_nothing_to_create) value="没有要创建的东西：传 --agent NAME（可选 --name/--count），或用 --file" ;;
         err_no_containers_given) value="没有指定任何容器" ;;
@@ -264,7 +271,7 @@ t() {
         err_fork_args)        value="fork 需要源容器和目标名：install.sh fork SRC NEW" ;;
         warn_menu_selection)  value="无法识别的菜单选择：'%s'（key='%s'）" ;;
         err_volume_exists)    value="卷 %s 已经存在" ;;
-        warn_both_engines)    value="podman 和 docker 都已安装；使用 %s（可用 --engine 覆盖）" ;;
+        warn_both_engines)    value="检测到多个后端（%s）；使用 %s（可用 --backend 覆盖）" ;;
         err_engine_required)  value="这个容器需要容器引擎 %s，但它没有安装" ;;
         kept_image_in_use)    value="保留镜像 %s：容器 %s 正从它运行（删掉那个容器后再清理镜像）" ;;
         kept_snapshot_in_use) value="%s 的快照 %s 仍被 %s 使用；保留它及其镜像 %s" ;;
@@ -358,7 +365,7 @@ t() {
         snapshotted)          value="snapshot created" ;;
         rolled_back)          value="rolled back" ;;
         nothing_changed)      value="nothing was changed" ;;
-        need_engine)          value="neither podman nor docker is installed; install one of them first" ;;
+        need_engine)          value="neither incus, podman nor docker is installed; install one of them first" ;;
         gum_skipped)          value="continuing with plain prompts" ;;
         pipe_no_tui)          value="install.sh: nothing was changed - this ran non-interactively, so the interactive TUI could not start (stdin is the piped script)." ;;
         pipe_run_with_tty)    value="Run it with a terminal, or pass a subcommand through the pipe:" ;;
@@ -381,6 +388,13 @@ t() {
         err_not_running)      value="container %s is not running (docs/containers.md#troubleshooting explains host limits)" ;;
         err_not_running_try)  value="container %s is not running (try: %s)" ;;
         err_unknown_mode)     value="unknown mode '%s' (expected persistent or ephemeral)" ;;
+        err_backend_not_ready) value="backend %s is installed but not usable yet: %s" ;;
+        err_backend_missing)  value="--backend/--engine %s was requested but %s is not installed" ;;
+        err_no_backend_impl)  value="no backend implementation for '%s' (expected %s)" ;;
+        err_incus_helper)     value="Incus cannot pull an OCI image: podman or docker (and xz) is needed to export %s into a rootfs it can import" ;;
+        err_incus_image_missing) value="the image %s is not imported into Incus yet; run ./install.sh pull (create and upgrade pull too)" ;;
+        err_incus_env)        value="failed to set the environment variable %s on the Incus instance" ;;
+        err_incus_env_verify) value="the Incus instance did not store the value of %s (what was written is not what reads back; refusing to start without credentials)" ;;
         err_ephemeral_enter)  value="container %s was created in ephemeral mode and cannot be entered" ;;
         err_nothing_to_create) value="nothing to create: pass --agent NAME (and optionally --name/--count), or use --file" ;;
         err_no_containers_given) value="no containers were specified" ;;
@@ -483,7 +497,7 @@ t() {
         err_fork_args)        value="fork needs a source and a destination: install.sh fork SRC NEW" ;;
         warn_menu_selection)  value="unrecognised menu selection: '%s' (key='%s')" ;;
         err_volume_exists)    value="volume %s already exists" ;;
-        warn_both_engines)    value="both podman and docker are installed; using %s (override with --engine)" ;;
+        warn_both_engines)    value="more than one backend is installed (%s); using %s (override with --backend)" ;;
         err_engine_required)  value="container engine %s is required for this container but is not installed" ;;
         kept_image_in_use)    value="keeping image %s: container %s runs from it (remove that container, then prune images)" ;;
         kept_snapshot_in_use) value="snapshot %s of %s is still used by %s; keeping it and its image %s" ;;
@@ -525,8 +539,12 @@ tf() {
   local key="$1"; shift
   local fmt
   fmt="$(t "$key" "")"
+  # `printf --` and not `printf`: a translated message may legitimately *start* with a
+  # flag name (the missing-backend refusal begins with `--backend/--engine`), and printf
+  # would read that as an option, print `printf: --: invalid option` to stderr and render
+  # nothing -- a `die` with an empty message and a raw printf error instead.
   # shellcheck disable=SC2059  # the format string is the translated message by design
-  printf "$fmt" "$@"
+  printf -- "$fmt" "$@"
 }
 
 # usage_text: the whole --help block.
@@ -587,7 +605,8 @@ create 选项
   --no-web            不为这些容器发布 Web 端口
 
 全局选项
-  --engine auto|podman|docker   用哪个引擎（默认：auto）
+  --backend auto|incus|podman|docker
+                                用哪个后端（默认：auto；--engine 是别名）
   --image REF                   要运行的镜像（默认：取自 image.env）
   --no-tui                      绝不启动 TUI；该提问时直接失败
   --dry-run, -n                 只打印引擎命令，不真正执行
@@ -653,7 +672,9 @@ create options for the agent web UI
   --no-web            do not publish a web UI port for these containers
 
 global options
-  --engine auto|podman|docker   which engine to use (default: auto)
+  --backend auto|incus|podman|docker
+                                which backend to use (default: auto; --engine is
+                                an alias)
   --image REF                   image to run (default: from image.env)
   --no-tui                      never start the TUI; fail instead of prompting
   --dry-run, -n                 print the engine commands instead of running
