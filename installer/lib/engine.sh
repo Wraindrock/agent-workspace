@@ -3,7 +3,7 @@
 # Backend abstraction: one interface over every way this installer can run a
 # workspace.
 #
-# A backend is a name (podman, docker, incus) plus an implementation file,
+# A backend is a name (podman, docker, incus, kvm) plus an implementation file,
 # installer/lib/backend-<name>.sh, that defines the same set of verbs:
 #
 #   eng_version                 the backend's own version line
@@ -60,11 +60,101 @@ BACKEND_DIR="${BACKEND_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # flag turns it back on for a host that can actually run it.
 BACKEND_GATED="${BACKEND_GATED:-incus}"
 AW_ENABLE_BACKEND_INCUS="${AW_ENABLE_BACKEND_INCUS:-0}"
-# kvm is the recommended backend in the design, but this version has no
-# backend-kvm.sh: a bootable disk is still a non-goal. It is listed with its
-# trade-offs and marked not-selectable, so the comparison the user needs is
-# complete (docs/backend-model.md, the backend table).
-BACKEND_UNIMPLEMENTED="${BACKEND_UNIMPLEMENTED:-kvm}"
+# Still the mechanism for a backend that is described but not driven (a future
+# backend can be added to this list without touching the selection code). It is
+# empty today: every backend in the table now has an implementation file. KVM
+# left this list with backend-kvm.sh - a bootable qcow2/rootfs is implemented;
+# see docs/backend-model.md.
+BACKEND_UNIMPLEMENTED="${BACKEND_UNIMPLEMENTED:-}"
+
+# KVM settings shared by the probe (this file) and backend-kvm.sh. They live
+# here because backend_ready runs before a backend file is loaded: the list and
+# the chooser must be able to answer "is kvm usable" without sourcing it.
+KVM_URI="${KVM_URI:-${AW_KVM_URI:-qemu:///session}}"
+# tests set AW_KVM_DEVICE to a plain file: the probe must stay runnable on a CI
+# machine without /dev/kvm, and a fake device tests the code around the check.
+KVM_DEVICE="${KVM_DEVICE:-${AW_KVM_DEVICE:-/dev/kvm}}"
+KVM_ROOT="${KVM_ROOT:-${AW_KVM_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-workspace/vms}}"
+
+# backend_bin NAME prints the command a backend drives. Every backend is named
+# after its binary except kvm, whose implementation drives virsh: a host does not
+# have a `kvm` command, and probing for one would report the backend missing on a
+# perfectly capable host.
+backend_bin() {
+  case "${1:-}" in
+    kvm) printf 'virsh' ;;
+    *)   printf '%s' "${1:-}" ;;
+  esac
+}
+
+# kvm_probe checks everything backend-kvm.sh needs before it can boot anything,
+# and records every missing item in KVM_PROBE_MISSING (one line, separators "; ")
+# so the refusal can name them. Read-only: it never creates the storage
+# directory, because the comparison table calls it on hosts that never asked for
+# KVM. A missing binary short-circuits nothing: all missing items are collected.
+kvm_probe() {
+  local bin parent
+  KVM_PROBE_MISSING=""
+  if [[ ! -e "${KVM_DEVICE}" ]]; then
+    KVM_PROBE_MISSING="${KVM_DEVICE} does not exist (nested virtualisation disabled?)"
+  elif [[ ! -r "${KVM_DEVICE}" || ! -w "${KVM_DEVICE}" ]]; then
+    KVM_PROBE_MISSING="${KVM_DEVICE} is not readable and writable (add the user to the kvm group)"
+  fi
+  for bin in virsh qemu-img virt-install xorriso mkfs.ext4 ssh ssh-keygen unshare; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      _kvm_probe_missing "${bin} is not on PATH"
+    fi
+  done
+  # The OCI image transport is podman/docker. Without one there is nothing to
+  # export the image with, so refuse before downloading anything.
+  if ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
+    _kvm_probe_missing "podman or docker is not on PATH (it exports the OCI image)"
+  fi
+  # The disk image is assembled in an unprivileged user namespace so that the
+  # root-owned file modes (setuid binaries included) survive the export. Without
+  # it every rootfs file would keep the invoking user's ownership and sudo would
+  # be broken inside the guest.
+  if command -v unshare >/dev/null 2>&1 && ! unshare -r true >/dev/null 2>&1; then
+    _kvm_probe_missing "unprivileged user namespaces are unavailable (unshare -r fails)"
+  fi
+  if command -v virsh >/dev/null 2>&1; then
+    if ! virsh --connect "$KVM_URI" version >/dev/null 2>&1; then
+      _kvm_probe_missing "libvirt is not reachable at ${KVM_URI} (sudo systemctl enable --now virtqemud.socket virtnetworkd.socket)"
+    fi
+  fi
+  # Walk up to the first existing parent: the storage root itself is created on
+  # first use, and probing must not leave directories behind on a host that only
+  # asked for the comparison table.
+  parent="${KVM_ROOT}"
+  while [[ -n "${parent}" && ! -e "${parent}" ]]; do
+    parent="$(dirname "${parent}")"
+  done
+  if [[ -z "${parent}" || ! -w "${parent}" ]]; then
+    _kvm_probe_missing "storage directory ${KVM_ROOT} is not writable (AW_KVM_ROOT overrides it)"
+  fi
+  [[ -z "${KVM_PROBE_MISSING}" ]]
+}
+
+_kvm_probe_missing() {
+  if [[ -z "${KVM_PROBE_MISSING}" ]]; then
+    KVM_PROBE_MISSING="${1}"
+  else
+    KVM_PROBE_MISSING+="; ${1}"
+  fi
+}
+
+# backend_version_line NAME prints the backend's own version line for doctor.
+backend_version_line() {
+  case "${1:-}" in
+    kvm)
+      virsh --connect "$KVM_URI" version 2>/dev/null \
+        | sed -n 's/^Using library version /libvirt /p' | head -n 1 || true
+      ;;
+    *)
+      "$(backend_bin "${1:-}")" --version 2>/dev/null | head -n 1 || true
+      ;;
+  esac
+}
 
 # backend_gated NAME: is NAME refused for now? The environment flag is the
 # documented way to turn the gate off; a bare `0` (the default) keeps it on.
@@ -127,9 +217,9 @@ validate_backend() {
 # it cannot drive.
 backend_names() {
   local name
-  for name in incus podman docker; do
+  for name in kvm incus podman docker; do
     backend_installable "$name" || continue
-    command -v "$name" >/dev/null 2>&1 || continue
+    command -v "$(backend_bin "$name")" >/dev/null 2>&1 || continue
     printf '%s\n' "$name"
   done
   # A caller assigns this: `names="$(backend_names)"`. Without an explicit 0 the
@@ -147,8 +237,9 @@ backend_names() {
 # into a wall of failures. Read-only and never fatal.
 backend_ready() {
   local name="${1:-}"
-  command -v "$name" >/dev/null 2>&1 || return 1
+  command -v "$(backend_bin "$name")" >/dev/null 2>&1 || return 1
   case "$name" in
+    kvm)   kvm_probe || return 1 ;;
     incus) "${name}" info >/dev/null 2>&1 || return 1 ;;
     *)     "${name}" --version >/dev/null 2>&1 || return 1 ;;
   esac
@@ -160,6 +251,13 @@ backend_ready() {
 # by the installer - preparing the host is the user's call (see doctor).
 backend_not_ready_hint() {
   case "${1:-}" in
+    kvm)
+      # kvm_probe recorded the exact list; the install command is the part a user
+      # cannot guess. Package names differ per distribution, so both are offered.
+      printf '%s (%s)' \
+        "$(tf backend_hint_kvm_install)" \
+        "${KVM_PROBE_MISSING:-$(tf backend_hint_kvm_missing)}"
+      ;;
     incus) printf '%s\n' 'sudo systemctl enable --now incus.socket && sudo incus admin init --minimal' ;;
     *)     printf '%s\n' "the ${1} daemon is not answering" ;;
   esac
@@ -174,7 +272,7 @@ backend_status_key() {
     printf 'backend_unimplemented'
   elif backend_gated "$name"; then
     printf 'backend_gated'
-  elif command -v "$name" >/dev/null 2>&1; then
+  elif command -v "$(backend_bin "$name")" >/dev/null 2>&1; then
     printf 'backend_available'
   else
     printf 'backend_unavailable'
@@ -187,7 +285,7 @@ backend_status_key() {
 backend_recommended() {
   local name="${1:-}"
   case "$name" in
-    kvm)    [[ -e /dev/kvm ]] ;;
+    kvm)    [[ -e "${KVM_DEVICE}" ]] ;;
     podman) return 0 ;;
     docker) return 0 ;;
     *)      return 1 ;;
@@ -276,7 +374,7 @@ backend_load() {
 # what the list wants: "not installed" and "installed but not answering" are
 # different answers to the user.
 backend_installed() {
-  command -v "${1:-}" >/dev/null 2>&1
+  command -v "$(backend_bin "${1:-}")" >/dev/null 2>&1
 }
 
 # resolve_backend NAME [explicit] turns the chosen backend into a loaded backend.
@@ -324,15 +422,15 @@ resolve_engine() {
   if backend_unimplemented "$wanted"; then
     die_backend_unimplemented "$wanted"
   fi
-  if ! command -v "$wanted" >/dev/null 2>&1; then
-    die_k err_backend_missing "${wanted}" "${wanted}"
+  if ! command -v "$(backend_bin "$wanted")" >/dev/null 2>&1; then
+    die_k err_backend_missing "${wanted}" "$(backend_bin "$wanted")"
   fi
   if ! backend_ready "$wanted"; then
     hint="$(backend_not_ready_hint "$wanted")"
     die_k err_backend_not_ready "${wanted}" "${hint}"
   fi
   ENGINE="$wanted"
-  ENGINE_BIN="$ENGINE"
+  ENGINE_BIN="$(backend_bin "$wanted")"
   backend_load "$ENGINE"
   msg_k engine_line "${ENGINE}" "$(eng_version)"
 }
@@ -341,11 +439,11 @@ resolve_engine() {
 use_engine() {
   local name="${1:-}"
   [[ -z "$name" ]] && return 0
-  if ! command -v "$name" >/dev/null 2>&1; then
-    die_k err_engine_required "${name}"
+  if ! command -v "$(backend_bin "$name")" >/dev/null 2>&1; then
+    die_k err_engine_required "$(backend_bin "$name")"
   fi
   ENGINE="$name"
-  ENGINE_BIN="$name"
+  ENGINE_BIN="$(backend_bin "$name")"
   backend_load "$ENGINE"
 }
 # run_engine is the raw, dry-run aware escape hatch. Backends that drive a

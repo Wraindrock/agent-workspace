@@ -248,7 +248,7 @@ scratch      opencode  ephemeral
 
 持久化实例把 agent 的整个工作目录放在 `/home/agent`，处于引擎管理的存储里：
 `podman`/`docker` 下是命名卷，`incus` 下是实例自己的磁盘加上安装器管理的 home
-目录。创建和进入实例不再把宿主目录 bind mount 进去，所以宿主机上的文件夹不会
+目录，`kvm` 下是实例自己的 qcow2 磁盘。创建和进入实例不再把宿主目录 bind mount 进去，所以宿主机上的文件夹不会
 变成 agent 的工作目录。安装器自己的状态（凭据、后端选择、元数据、快照）仍然放在
 宿主机的 `~/.config` 与 `~/.local/share` 下。
 
@@ -375,14 +375,16 @@ just verify    # 构建 + 全部容器级测试
 just verify-all # 上述内容再加无需引擎的契约测试
 ~~~
 
-依赖：任选一个后端——`podman`、`docker` 或 `incus`（见[后端](#后端)）；`kvm` 是推荐但尚未实现——
-`install.sh` 另需 bash 4.4+；构建与自检还需要 `just`。
+依赖：任选一个后端——`kvm`（有 `/dev/kvm` 时推荐，需要 libvirt + QEMU 和
+`podman`/`docker`）、`podman`、`docker` 或 `incus`（见[后端](#后端)）；`install.sh`
+另需 bash 4.4+；构建与自检还需要 `just`。
 仓库自检在装了 `shellcheck`、`actionlint`、`python3`+`pyyaml` 时使用它们，
 没装就跳过；`tests/smoke.sh` 另需 `jq`。CI 只显式安装 `actionlint` 与 `just`，其余
-依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套十一个测试
+依赖运行器镜像自带的 `shellcheck`、`jq`、`python3`。每个 PR 都会跑同一套十二个测试
 脚本：`tests/lint.sh`、`tests/install.sh`、`tests/smoke.sh`、`tests/integration.sh`、
 `tests/portability.sh`、`tests/decoupling.sh`、`tests/contract.sh`、
-`tests/firstboot.sh`、`tests/bootstrap.sh`、`tests/i18n.sh`、`tests/incus.sh`。
+`tests/firstboot.sh`、`tests/bootstrap.sh`、`tests/i18n.sh`、`tests/incus.sh`、
+`tests/kvm.sh`。
 其中 `integration` 会通过 `install.sh` 创建真实容器，
 `portability` 证明镜像在从未调优过内核参数的宿主上也能启动，两者都需要宿主能用
 rootless podman 启动 systemd；其余都是静态或 CLI 级测试（`incus` 用假守护进程），
@@ -438,12 +440,13 @@ logs、copy、remove……），由后端实现。**没有 `auto`**：探测宿�
 
 | 后端 | 工作区是什么 | 取舍 |
 | --- | --- | --- |
-| `kvm` **推荐** | 一套完整系统：自己的内核、init 与模块 | 需要内核的操作都能做；代价是首次要把镜像做成可启动磁盘，并真实占用内存与磁盘 |
+| `kvm` **推荐** | 一套完整系统：自己的内核、init 与模块，由 libvirt/QEMU 启动 | 需要内核的操作都能做；代价是首次要把镜像做成可启动 qcow2，并真实占用内存与磁盘 |
 | `podman` **推荐** | 你自己 rootless podman 里的一个容器 | 最轻最快、无需准备；共享宿主内核，有些操作结构上做不到 |
 | `docker` 备选 | 你 docker 里的一个容器 | 共享宿主内核的代价相同；实例里的 init 需要 `--privileged --cgroupns=host`（安装器会加）；已经用 docker 的环境方便 |
 | `incus` *本版本暂不可选* | 一个非特权 Incus 实例 | 可见且实现仍在；本版本在这套宿主系统上会拒绝选择它 |
 
-清单会按宿主实际情况标注：没装的后端标 `not installed`，`incus` 标
+清单会按宿主实际情况标注：没装的后端标 `not installed`；`kvm` 还会报告第一项
+缺失（设备、libvirt URI、工具或存储目录）以及对应的安装命令；`incus` 标
 `not selectable in this version`。
 
 ### Incus 可见，但不隐藏也不可选
@@ -479,6 +482,34 @@ OCI 镜像不是以镜像引用交给守护进程的：后端先用 `podman`（�
 digest 真的变了才会重新导入。每个后端的细节与尚未验证的部分见
 [docs/containers.md](docs/containers.md#backends)。
 
+### KVM：用同一个镜像启动的虚拟机
+
+`--backend kvm` 让镜像自己的 rootfs 在 KVM 里启动，而不是作为容器运行。有
+`/dev/kvm` 时它是推荐项；它需要一次宿主准备，安装器不会替你做（探针会准确
+列出缺什么，并给出安装命令）：
+
+~~~bash
+# Fedora: sudo dnf install libvirt virt-install qemu-img xorriso e2fsprogs podman
+# Arch:   sudo pacman -S libvirt virt-install xorriso e2fsprogs podman
+sudo systemctl enable --now virtqemud.socket virtnetworkd.socket
+~~~
+
+默认使用 `qemu:///session`——rootless、用户态网络、不装系统服务——实例存放在
+`${XDG_DATA_HOME:-~/.local/share}/agent-workspace/vms`。`AW_KVM_URI` 与
+`AW_KVM_ROOT` 可覆盖 URI 和存储根；`qemu:///system` 需要显式选择，绝不自动。
+
+构建路径就是 Phase A 已经证明、后端照着实现的那条：导出 OCI rootfs，使用镜像
+自带的 bootc 内核与 initramfs，在非特权用户命名空间里 rootless 地构建 ext4 镜像
+（`unshare -r`，因此 0000 权限文件与 root 属主都能正确记录，却不需要宿主 root），
+转成 qcow2，再以直接内核方式启动
+（`root=/dev/vda rw console=ttyS0`）。NoCloud cloud-init seed ISO 负责创建
+`agent` 用户并注入每实例 SSH 密钥，因此 `enter`、`backup`、`restore` 都是普通
+SSH 流。串口控制台是救援通道（`root`/`rescue`），`logs` 读取它。客户机 3080
+端口以 `hostfwd=tcp:127.0.0.1:<port>-:3080` 发布，所以 VM 里请求的 URL 在宿主
+回环上就能打开——与其他后端的呈现规则一致，不往外拷数据。`ephemeral` 模式对
+VM 刻意拒绝。完整设计、抓到的控制台片段与确切的 `virt-install` 命令见
+[docs/backend-model.md](docs/backend-model.md#kvm-the-oci-image-as-a-bootable-vm)。
+
 ## 注意事项
 
 - GHCR 新建 package 时**默认是 private**。本项目的 package 已经设为 public，匿名
@@ -493,6 +524,9 @@ digest 真的变了才会重新导入。每个后端的细节与尚未验证的�
 - `docker` 需要 `--privileged --cgroupns=host` 才能让镜像里的 systemd 当 PID 1；
   安装器会自动加上这些参数，但如果有得选，优先用 `podman`。
 - `incus` 后端可见但本版本暂不可选，需要先做[后端](#后端)里那条一次性宿主准备。
+- `kvm` 后端是真正的虚拟机，有独立内核：里面的 root 是客户机 root，不是宿主
+  root，边界是 hypervisor 而不是共享内核。它需要 `/dev/kvm`、libvirt，以及一个
+  `podman`/`docker` 来导出镜像；内存与磁盘开销比容器大，且拒绝 `ephemeral` 模式。
 
 ## 首次开机
 

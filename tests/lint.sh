@@ -180,13 +180,14 @@ for required in Containerfile Justfile install.sh image.env LICENSE README.md \
   installer/lib/agents.sh installer/lib/commands.sh \
   installer/lib/backend-container-cli.sh installer/lib/backend-podman.sh \
   installer/lib/backend-docker.sh installer/lib/backend-incus.sh \
+  installer/lib/backend-kvm.sh \
   system_files/usr/share/agent-workspace/dsh-web.yml \
   runtime/lib/dsh-profile.sh \
   system_files/usr/share/agent-workspace/dsh/profiles/web/package.json \
   system_files/usr/share/agent-workspace/dsh/profiles/web/pnpm-workspace.yaml \
   system_files/usr/share/agent-workspace/dsh/profiles/web/pnpm-lock.yaml \
   system_files/usr/share/agent-workspace/dsh/profiles/web/cordis.patch.yml \
-  tests/install.sh tests/fixtures/fake-engine.sh; do
+  tests/install.sh tests/kvm.sh tests/fixtures/fake-engine.sh; do
   if [[ -e "$required" ]]; then
     pass "$required"
   else
@@ -257,6 +258,24 @@ for symbol in eng_version eng_container_exists eng_container_running eng_contain
 done
 # install.sh is the single supported entry point; the bootc disk images and the
 # host-side lifecycle helpers were removed with the container-only redesign.
+# The KVM backend drives libvirt rather than a container CLI, so it implements
+# the same interface itself; a backend missing a verb would fail deep inside a
+# create/upgrade, so the interface is asserted verb by verb here too.
+for symbol in eng_version eng_container_exists eng_container_running eng_container_status \
+  eng_container_image eng_labeled_containers eng_volume_exists eng_image_exists eng_image_id \
+  eng_image_created eng_host_port eng_pull eng_image_remove eng_image_run \
+  eng_create_persistent eng_create_ephemeral eng_start eng_stop eng_remove \
+  eng_volume_create eng_volume_remove eng_exec eng_exec_root eng_exec_nofail \
+  eng_exec_test eng_exec_capture eng_exec_background eng_logs eng_commit \
+  eng_volume_archive eng_volume_restore_archive eng_volume_clone eng_volume_export_path; do
+  if grep -qE "^${symbol}\(\)[[:space:]]*\{" installer/lib/backend-kvm.sh; then
+    pass "installer/lib/backend-kvm.sh defines ${symbol}"
+  else
+    fail "installer/lib/backend-kvm.sh does not define ${symbol}"
+  fi
+done
+# install.sh is the single supported entry point; the bootc disk images and the
+# host-side lifecycle helpers were removed with the container-only redesign.
 for gone in disk_config .github/workflows/build-disk.yml scripts/switch.sh \
   scripts/rollback.sh scripts/doctor.sh runtime/lib/cmd-lifecycle.sh; do
   if [[ -e "$gone" ]]; then
@@ -280,7 +299,7 @@ echo "ci coverage"
 # it here: a script CI silently stops running has to fail the lint instead of
 # quietly drifting away from the documentation. Adding a test means adding it to
 # this list *and* to build.yml, in the same change.
-for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh tests/i18n.sh tests/incus.sh; do
+for script in tests/lint.sh tests/install.sh tests/smoke.sh tests/integration.sh tests/decoupling.sh tests/portability.sh tests/contract.sh tests/firstboot.sh tests/bootstrap.sh tests/i18n.sh tests/incus.sh tests/kvm.sh; do
   if grep -qF -- "$script" .github/workflows/build.yml; then
     pass "build.yml runs ${script}"
   else

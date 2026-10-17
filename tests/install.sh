@@ -1047,7 +1047,7 @@ is "--help-agents works without an engine" 0 "$RUN_STATUS"
 contains "--help-agents lists the built-in agents" "dsh" "$RUN_OUT"
 run_installer "$BIN_NOSH" create --agent dsh --name engineless --yes
 is "creating without an engine fails" 1 "$RUN_STATUS"
-contains "the missing engine is reported when there is none" "neither incus, podman nor docker" "$RUN_OUT"
+contains "the missing engine is reported when there is none" "neither kvm (virsh), podman, docker nor incus" "$RUN_OUT"
 contains "the no-engine refusal still prints the backend list" "kvm" "$RUN_OUT"
 
 # =========================================================================

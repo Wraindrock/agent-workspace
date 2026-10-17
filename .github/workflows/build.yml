@@ -216,6 +216,13 @@ jobs:
       - name: interface language contract
         run: bash tests/i18n.sh
 
+      # The KVM backend builds a disk and drives libvirt/QEMU/SSH, so it gets
+      # its own fake-host test: no /dev/kvm, no libvirt and no network needed,
+      # and the real boot path stays proven by the captured console in
+      # docs/backend-model.md.
+      - name: kvm backend contract
+        run: bash tests/kvm.sh
+
       # The Incus backend speaks a different CLI than the container-CLI backends
       # and one of its verbs imports a rootfs into a daemon, so it gets its own
       # fake-daemon test: nothing here needs incus, root or a network.

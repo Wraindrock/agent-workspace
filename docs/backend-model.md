@@ -42,7 +42,7 @@ The list itself carries the comparison:
 
 | Backend | Status | Trade-offs |
 | --- | --- | --- |
-| `kvm` | recommended when `/dev/kvm` exists | a complete system: own kernel, init and modules, so operations that need them work. Heavier: an image has to be built into a bootable disk, and memory/disk are given up for real. |
+| `kvm` | **implemented**; recommended when `/dev/kvm` exists | a complete system: own kernel, init and modules, so operations that need them work. Heavier: an image has to be built into a bootable disk, and memory/disk are given up for real. Runs under libvirt (`qemu:///session`, rootless user-mode networking). |
 | `podman` | recommended, lightest start | shares the host kernel. Fast, cheap, no preparation; some operations are structurally impossible inside it. |
 | `docker` | alternative to podman | same kernel-sharing trade-off; useful where docker is already the host's tool. Needs `--privileged` for an in-container init. |
 | `incus` | present, **not selectable for now** | LXC system containers managed by a daemon. Kept visible and implemented; it becomes selectable again by turning the gate off (see below), which currently requires a different host system. |
@@ -61,8 +61,13 @@ The list itself carries the comparison:
   `incus`); `AW_ENABLE_BACKEND_INCUS=1` is the escape hatch the gate checks first,
   and removing `incus` from `BACKEND_GATED` is the one-step way back to a selectable
   incus.
-- `kvm` is listed as the recommendation and marked "not implemented" until a
-  backend-kvm.sh exists; it is never selectable, which is what the list says.
+- `kvm` is implemented by `installer/lib/backend-kvm.sh`; it is a normal,
+  selectable backend. A host does not have a `kvm` binary, so `backend_bin` maps
+  the name to `virsh` for the presence check, and `backend_ready` runs
+  `kvm_probe` (device, libvirt URI, tools, storage) instead of `virsh --version`.
+  `AW_KVM_URI` (default `qemu:///session`) and `AW_KVM_ROOT` (default
+  `~/.local/share/agent-workspace/vms`) are the documented overrides;
+  `AW_KVM_DEVICE` exists only so the test suite can run without `/dev/kvm`.
 - `--dry-run` on a host with no recorded choice assumes podman and says so: it is
   planning, not doing, so it is the one path that does not refuse.
 - `tests/install.sh` asserts all of the above as behaviour: non-interactive refusal
@@ -187,7 +192,11 @@ agent home, working tree, sessions — lives in the instance's own storage:
   directory is engine-attached storage the installer owns and validates, not a
   user-selected workspace folder, but it is honest to say the host user can read
   it;
-- the kvm backend is not implemented in this version.
+- kvm instances: one qcow2 disk under
+  `~/.local/share/agent-workspace/vms/<name>/disk.qcow2`; the agent's home lives
+  inside the guest filesystem, so there is no host directory to browse. The
+  per-instance directory also holds the SSH key (0600), the cloud-init seed ISO
+  and the serial console log, all user-owned.
 
 So a damaged environment can be thrown away without having ever held the user's
 data hostage, and every implemented backend has the same data model: the
@@ -222,6 +231,154 @@ test. What is gated is *selectability*: `auto` does not exist, and
 `--backend incus` fails with a message explaining that this host system cannot
 enable it yet and how it is turned back on. It is a gate, not a deletion, so
 enabling it later is one step.
+
+## KVM: the OCI image as a bootable VM
+
+`backend-kvm.sh` boots the same OCI image under KVM through libvirt. It is not a
+cloud image with the project installed on top: the image's own rootfs and its own
+bootc kernel are made bootable, exactly like the container backends use the
+image's own userland.
+
+### Host preparation (one-time, and never done by `install.sh`)
+
+The probe names every missing item and appends the package command for Fedora and
+Arch; selection refuses with that list. It checks, in one read-only pass:
+
+- `/dev/kvm` exists and is readable/writable (or `/dev/kvm` is absent because
+  nested virtualisation is off);
+- `virsh`, `qemu-img`, `virt-install`, `xorriso`, `mkfs.ext4`, `ssh`, `ssh-keygen`
+  are on `PATH` (each missing one is named);
+- `virsh --connect qemu:///session version` answers;
+- a container helper (`podman` or `docker`) exists to export the OCI image;
+- `unshare -r` can create a user namespace (util-linux; `podman unshare` is the
+  fallback);
+- the storage root's nearest existing parent is writable.
+
+The default URI is `qemu:///session`: rootless, user-mode networking, no system
+service. `AW_KVM_URI=qemu:///system` is the explicit opt-in for a host where
+session mode cannot boot. Storage is `${AW_KVM_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-workspace/vms}`,
+owned by the user; `/var/lib/libvirt/images` is deliberately not used.
+
+### Build path (proven; this is what the backend implements)
+
+1. **Export the rootfs.** `podman create` + `podman export` (or the docker
+   equivalent) into a tar; extract under the image cache
+   (`vms/images/<sanitised-ref>/`) inside the same unprivileged user namespace.
+   The extraction step matters: a plain user extraction silently strips setuid
+   bits, which leaves `sudo` unusable in the guest; inside the namespace tar
+   restores the image's root-owned modes. `podman run` is not required.
+2. **Use the image's own kernel.** A bootc image ships
+   `/usr/lib/modules/<version>/{vmlinuz,initramfs.img}`; the backend copies them
+   into the image cache as `vmlinuz`/`initramfs.img`. An image without them is
+   refused with that reason instead of building something silently unbootable.
+3. **Make an ext4 disk, rootless.** `truncate` a sparse raw image and run
+   `chown -R 0:0` + `mkfs.ext4 -d <rootfs>` as uid 0 inside an unprivileged user
+   namespace (`unshare -r`; `podman unshare` when unshare is unavailable). The
+   namespace is what makes root-only modes such as `/etc/gshadow` (0000) readable
+   and records root ownership, without host root; fakeroot is not enough here
+   because it fakes chown/stat but cannot grant that DAC override. Convert the raw
+   image to qcow2 with `qemu-img convert`. The files stay owned by you, so QEMU can open
+   them; nothing is ever created as host root.
+4. **Seed with cloud-init.** A per-instance ed25519 key pair is generated at create
+   time (private key 0600, host side) and injected through a NoCloud seed ISO
+   (volume label `cidata`, built with `xorriso`): the `agent` user in `wheel`
+   (sudo stays password-gated until `root on` writes its rule, exactly like the
+   container backends) and the public key. The environment file is pushed over
+   SSH after the guest answers, so it is not baked into the seed. The seed also
+   installs a small script that opens the presentation port in the guest
+   firewall: user-mode networking makes the guest see the host as `10.0.2.0/24`,
+   and the distro firewall otherwise drops the forwarded request (the symptom
+   is a TCP connect that succeeds while HTTP hangs). cloud-init is
+   part of the image build now (`cloud-init` in
+   `build_files/modules/10-base-packages/install.sh`); an image built without it
+   is refused with the reason, because the key could not reach the guest.
+5. **Define the domain.** Direct-kernel boot of the rootfs: `<kernel>`, `<initrd>`,
+   kernel args `root=/dev/vda rw console=ttyS0`, a virtio-blk disk, `--graphics
+   none`, a serial file log, and user-mode networking with
+   `hostfwd=tcp:127.0.0.1:<ssh-port>-:22` and
+   `hostfwd=tcp:127.0.0.1:<web-port>-:3080`. The XML template is generated per
+   instance and defined with `virsh define`. The `<qemu:commandline>` element
+   must be a direct child of `<domain>` (libvirt silently ignores it inside
+   `<devices>`), and the custom virtio-net device needs an explicit free PCI
+   slot (`bus=pcie.0,addr=0x6`): without it QEMU picks slot 1, which libvirt has
+   already given to a PCIe root port, and the domain refuses to start with
+   `PCI: slot 1 function 0 not available`.
+6. **Wait without sleeping.** A bounded poll (not a fixed sleep) waits for the
+   domain to run, then for SSH to answer with the instance key
+   (`BatchMode`, `ConnectTimeout`), then for
+   `/var/lib/agent-workspace/.provisioned`; each timeout prints the tail of the
+   serial console and the path of the full log.
+
+### The proven boot (captured evidence)
+
+Phase A booted the exported image's rootfs directly with QEMU/KVM, outside the
+backend, to prove the disk+kernel path before implementing it. The proof ran in the
+development distrobox; the serial console log is saved there as
+`~/.local/share/aw-phasea/evidence/console-direct-boot.log` and contains exactly
+one `fedora login:` line. The command was:
+
+~~~bash
+D=$HOME/.local/share/aw-phasea
+virt-install --connect qemu:///session --name aw-proof --memory 4096 --vcpus 4 \
+  --cpu host-passthrough --import \
+  --disk path=$D/disk.img,format=raw,bus=virtio,cache=none \
+  --boot kernel=$D/boot/vmlinuz,initrd=$D/boot/initramfs.img,\
+kernel_args="root=/dev/vda rw console=ttyS0,115200 selinux=0 enforcing=0" \
+  --network user,model=virtio --graphics none \
+  --serial file,path=$D/console.log --osinfo detect=on,require=off \
+  --noautoconsole --wait 0 --check path_in_use=off
+~~~
+
+The disk was a 16 GiB sparse ext4 image built with
+`mkfs.ext4 -q -F -L aw-root -d <rootfs>`, and the kernel was the image's
+7.2.10-200.fc44.x86_64 bootc kernel. The console reached multi-user:
+
+~~~text
+  Welcome to Fedora Linux 44.20261014.0 (Forty Four)!
+  ...
+  [ OK ] Reached target basic.target - Basic System.
+  [ OK ] Reached target ssh-access.target - SSH Access Available.
+  Fedora Linux 44.20261014.0 (Forty Four)
+  Kernel 7.2.10-200.fc44.x86_64 on x86_64 (ttyS0)
+  fedora login:
+~~~
+
+`bootloader-update.service` failed in that boot (benign: the bootc image has no
+bootloader), and `ostree-remount.service` was skipped because
+`ConditionKernelCommandLine=ostree` was unmet — both are expected for a plain
+`root=/dev/vda` boot and do not stop multi-user. cloud-init was not yet in that
+image; the backend now builds it in. The backend was then exercised end to end in
+the same session: cloud-init created the agent user, the per-instance key reached
+the guest, the first-boot marker and SSH were reached by the bounded poll, the web
+server on guest port 3080 answered on the host's loopback forward, `backup`
+streamed the home out over SSH, and the serial console still had the root
+autologin for rescue. The evidence is in
+`~/.local/share/aw-phasea/evidence/` (`console-direct-boot.log`,
+`e2e-create.log`, `e2e-backup.log`); `tests/kvm.sh` asserts every layer with fake
+`virsh`/`qemu-img`/`ssh` binaries so CI needs no `/dev/kvm`. `qemu:///system`
+remains unverified by choice (rootless session mode is the default).
+
+### Lifecycle and data
+
+- `create/start/stop/status/destroy` are libvirt domain lifecycle operations;
+  `list` and `doctor` read the recorded state as for any instance.
+- `enter` (and a non-interactive command) is SSH to the agent user on the
+  per-instance loopback port, inside a login shell; `root`/`rescue` use the serial
+  console (`virsh console`), where the seed enables root autologin on `ttyS0` so a
+  wedged guest is still reachable. `logs` tails the serial log.
+- Data is the qcow2, full stop. `backup` streams `/home/agent` out of the guest
+  over SSH into a verified archive; `restore` boots a stopped instance, streams the
+  archive back, and stops it again; `snapshot`/`commit` shut the domain down
+  gracefully, convert the disk to a new qcow2 with `qemu-img`, and restart it;
+  `fork`/`rollback` use the same archive buffer as the containers.
+- The **presentation channel** is one loopback forward per layer: guest port 3080
+  is published as `hostfwd=tcp:127.0.0.1:<port>-:3080`, so a URL requested inside
+  the VM is loaded from the host at `127.0.0.1:<port>`. Nothing is copied out of
+  the guest to make that work.
+- Deliberately not implemented: `ephemeral` mode (booting a VM to run one command
+  wastes the point of a VM), a GUI/desktop session (the project's desktop
+  non-goal), and SSH authentication by anything other than the per-instance key on
+  loopback. `AW_KVM_URI=qemu:///system` is opt-in, never automatic.
 
 ## Not in this version (deliberate non-goals)
 

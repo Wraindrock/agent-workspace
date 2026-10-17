@@ -297,26 +297,30 @@ it was created with.
 
 | backend | what the workspace is | trade-off |
 | --- | --- | --- |
-| `kvm` (recommended) | a complete system: own kernel, init and modules | kernel-dependent operations work; costs a bootable disk image and real memory/disk |
+| `kvm` (recommended when `/dev/kvm` exists) | a complete system: own kernel, init and modules, booted by libvirt/QEMU | kernel-dependent operations work; costs a bootable qcow2 and real memory/disk; needs libvirt + QEMU + a podman/docker helper |
 | `podman` (recommended) | container in your rootless podman | lightest and fastest, no preparation; shares the host kernel |
 | `docker` | container in your docker | same kernel-sharing trade-off; needs `--privileged --cgroupns=host` for an in-instance init |
 | `incus` (not selectable in this version) | unprivileged Incus instance (daemon-owned) | kept visible, implemented and tested; *selecting* it is gated |
 
-`kvm` is not implemented yet; the list still shows it as the recommendation, marked
-as such. `incus` is the one backend that is present but refused: `--backend incus`
-and `./install.sh backend set incus` fail with an explanation, while `install.sh
+`kvm` is implemented: it boots the image's own rootfs and bootc kernel as a VM under
+libvirt; see [docs/backend-model.md](backend-model.md#kvm-the-oci-image-as-a-bootable-vm)
+for the build path, the captured boot and the host preparation. `incus` is the one
+backend that is present but refused: `--backend incus` and
+`./install.sh backend set incus` fail with an explanation, while `install.sh
 backend`, `install.sh list` and `install.sh doctor` still list it.
 
-| | podman / docker | incus |
-| --- | --- | --- |
-| what the workspace is | container in your rootless podman / docker | unprivileged Incus instance (daemon-owned) |
-| agent home | named volume mounted at `/home/agent` | installer-managed host directory `~/.local/share/agent-workspace/incus/homes/<name>` mounted at `/home/agent` |
-| agent working directory | `/home/agent` inside that volume | `/home/agent` inside the instance |
-| host workspace | none: no host path is mounted | none: no user host directory is attached |
-| web UI | `--publish 127.0.0.1:<port>:3080` | `proxy` device on `127.0.0.1` |
-| image | `pull` (and `commit` for a snapshot image) | `podman export` piped through `xz` into `incus image import`, cached by image ID |
-| fork / rollback | volume archives | `incus copy` plus home copies |
-| ready check | `<cli> --version` answers | `incus info` answers (the daemon is up) |
+| | podman / docker | incus | kvm |
+| --- | --- | --- | --- |
+| what the workspace is | container in your rootless podman / docker | unprivileged Incus instance (daemon-owned) | VM (libvirt/QEMU, own kernel) |
+| agent home | named volume mounted at `/home/agent` | installer-managed host directory `~/.local/share/agent-workspace/incus/homes/<name>` mounted at `/home/agent` | inside the guest filesystem on the instance's qcow2 |
+| agent working directory | `/home/agent` inside that volume | `/home/agent` inside the instance | `/home/agent` inside the guest |
+| host workspace | none: no host path is mounted | none: no user host directory is attached | none: no host path is mounted |
+| web UI | `--publish 127.0.0.1:<port>:3080` | `proxy` device on `127.0.0.1` | `hostfwd=tcp:127.0.0.1:<port>-:3080` |
+| image | `pull` (and `commit` for a snapshot image) | `podman export` piped through `xz` into `incus image import`, cached by image ID | `podman create` + `export`, extracted into an ext4 disk and converted to qcow2 |
+| fork / rollback | volume archives | `incus copy` plus home copies | qcow2 commit plus home archive over SSH |
+| ready check | `<cli> --version` answers | `incus info` answers (the daemon is up) | `kvm_probe`: device, libvirt URI, tools, writable storage |
+| exec / shell | engine `exec` | `incus exec` | SSH as the agent user on the per-instance loopback port |
+| rescue | engine exec as root | `incus exec --user root` | serial console (`virsh console`, root autologin on ttyS0) |
 
 The Incus daemon has to be initialised once by you, as root - `install.sh` never runs
 `sudo`, never writes under `/etc` and never starts a daemon:
@@ -345,7 +349,70 @@ stdin, exec/logs/commit/remove) verb by verb. Treat the Incus backend as
 **experimental until the first report of a real create**: the verbs listed above are
 asserted at the command level, not against `incusd`.
 
+**KVM host preparation** is the same contract: the installer never runs `sudo`,
+never writes under `/etc` and never starts a daemon, so the one-time setup is yours:
+
+~~~bash
+# Fedora
+sudo dnf install libvirt virt-install qemu-img xorriso e2fsprogs podman
+# Arch
+sudo pacman -S libvirt virt-install xorriso e2fsprogs podman
+sudo systemctl enable --now virtqemud.socket virtnetworkd.socket
+~~~
+
+The probe refuses with the first missing item, not a generic failure:
+
+~~~text
+backend kvm is installed but not usable yet: /dev/kvm is not present or not accessible
+backend kvm is installed but not usable yet: qemu:///session is not reachable (start virtqemud.socket, or check your libvirt session)
+backend kvm is installed but not usable yet: mkfs.ext4 is not on PATH
+backend kvm is installed but not usable yet: /home/you/.local/share/agent-workspace/vms is not writable
+~~~
+
+KVM's build path and the captured boot transcript are in
+[backend-model.md](backend-model.md#kvm-the-oci-image-as-a-bootable-vm).
+
+**KVM:** proven end to end in the development distrobox, and partly asserted by
+fakes in CI. The boot path itself was proven first: the image's rootfs and bootc
+kernel booted under QEMU/KVM to a `fedora login:` prompt (`docs/backend-model.md`
+has the command and excerpt). Later the backend itself ran the full path: `create`
+built the disk from the OCI image, cloud-init created the `agent` user and installed
+the per-instance SSH key, and the bounded poll reached SSH and the first-boot
+marker; the web server started in the guest on port 3080 was fetched from the host
+as `http://127.0.0.1:<forwarded port>/`; `backup` archived the home over SSH and the
+archive listed it; `root`/`rescue` had the root autologin on the serial console
+(`e2e login: root (automatic login)`); `remove` deleted the domain and the instance
+directory. The evidence files are in `~/.local/share/aw-phasea/evidence/`
+(`console-direct-boot.log`, `e2e-create.log`, `e2e-backup.log`). Every layer is also
+asserted against fake `virsh`/`qemu-img`/`ssh` binaries by `tests/kvm.sh`, which
+never needs `/dev/kvm`. Still unverified: `qemu:///system` (rootless
+`qemu:///session` is the default and the proven path).
+
 ## Troubleshooting
+
+### A KVM domain refuses to start: "UNIX socket path ... too long"
+
+Symptoms: `install.sh create --backend kvm` writes the disk and the seed ISO, then
+fails right after `virsh define` with
+
+~~~text
+error: Failed to start domain '<name>'
+error: internal error: UNIX socket path '<XDG dir>/libvirt/qemu/lib/domain-N-<name>/monitor.sock' too long
+~~~
+
+and the serial console log is empty. Root cause: libvirt's QEMU session driver
+builds the monitor/socket paths from `XDG_CONFIG_HOME`/`XDG_RUNTIME_DIR`, and the
+filesystem `sun_path` limit is about 108 bytes; a deeply nested XDG directory can
+exceed it even though the storage path is fine. Workaround: keep those two
+directories short, which is their default on a normal login:
+
+~~~bash
+XDG_CONFIG_HOME="$HOME/.config" XDG_RUNTIME_DIR="/run/user/$(id -u)" ./install.sh create ...
+~~~
+
+`AW_KVM_ROOT` may stay deep: sockets are not placed under it. There is no
+installer escape hatch; it honours the environment it is given. The error text
+comes from libvirt's domain start, before QEMU runs.
 
 ### A container exits immediately, or a systemd container stops mid-boot
 

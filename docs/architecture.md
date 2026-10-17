@@ -106,7 +106,8 @@ matches that declaration.
 
 There is deliberately no host bind mount in that table. An instance's data lives
 inside the instance's own storage - the named volume for `podman`/`docker`, the
-instance disk plus its installer-managed home directory for `incus` - so the
+instance disk plus its installer-managed home directory for `incus`, the instance's
+own qcow2 for `kvm` - so the
 host's `--workspace` field is recorded for compatibility but never acted on.
 Nothing on the host is shared into the agent's working tree. The installer's own
 state (credentials, backend choice, metadata, snapshots) stays on the host under
@@ -239,15 +240,15 @@ dispatches, and one library per concern does the work.
 | Library | Role |
 | --- | --- |
 | `installer/lib/ui.sh` | the gum TUI (the menu needs gum and a terminal); individual prompts fall back to plain `read` when gum is missing |
-| `installer/lib/engine.sh` | the backend loader: detection and the ready check for each backend, the `auto` order (incus, podman, docker), the verb dispatching and a dry-run mode that prints commands instead of running them |
-| `installer/lib/backend-*.sh` | one file per backend - `backend-container-cli.sh` is the shared podman/docker implementation, `backend-podman.sh` and `backend-docker.sh` own the flags that boot systemd, `backend-incus.sh` implements the whole interface against `incus` |
+| `installer/lib/engine.sh` | the backend loader: detection and the ready check for each backend, the fixed candidate order (`kvm`, `podman`, `docker`, `incus`), the selectability gate, the verb dispatching and a dry-run mode that prints commands instead of running them |
+| `installer/lib/backend-*.sh` | one file per backend - `backend-container-cli.sh` is the shared podman/docker implementation, `backend-podman.sh` and `backend-docker.sh` own the flags that boot systemd, `backend-incus.sh` implements the whole interface against `incus`, `backend-kvm.sh` builds and runs the image as a libvirt/QEMU domain |
 | `installer/lib/state.sh` | where host state lives: `meta`, snapshots, and credential files |
 | `installer/lib/agents.sh` | the agent catalog, read from the image manifest and merged over the built-in table |
 | `installer/lib/commands.sh` | `create`, `list`, `start`, `stop`, `restart`, `enter`, `shell`, `logs`, `snapshot`, `snapshots`, `rollback`, `recover`, `fork`, `upgrade`, `web`, `remove`, `doctor` |
 
 | Decision | Made by |
 | --- | --- |
-| which engine | `--engine podman|docker`, otherwise podman if both are present |
+| which backend | `--backend`/`--engine`, otherwise the remembered choice, otherwise the interactive list; a non-interactive run with no choice refuses instead of guessing |
 | which image | `--image` (default taken from `image.env`) |
 | how many containers, and their names | the TUI, `--name`, `--count`, or a declaration file |
 | which agent each container runs | the built-in `dsh` and `opencode` table, with the agent catalog from the image manifest merged over it |

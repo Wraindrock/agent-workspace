@@ -12,6 +12,41 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Added
 
+- `kvm` is now a fourth backend and a real installation target: it boots the same OCI
+  image as a QEMU/KVM virtual machine instead of running it as a container. The build
+  path is the one proven in the development session - export the image rootfs, boot
+  the image's own bootc kernel and initramfs directly
+  (`root=/dev/vda rw console=ttyS0`), turn the rootfs into an ext4 disk inside
+  an unprivileged user namespace (`unshare -r`, or `podman unshare`) and convert
+  it to qcow2. The export is extracted in that namespace too, so the image's
+  setuid bits survive and `sudo` works in the guest -
+  and a NoCloud cloud-init seed ISO, generated at create time, finishes first boot:
+  it creates the `agent` user and injects a per-instance SSH key. The domain is
+  `virsh --connect qemu:///session` by default (rootless, user-mode networking,
+  storage under `${XDG_DATA_HOME:-~/.local/share}/agent-workspace/vms`,
+  `AW_KVM_URI`/`AW_KVM_ROOT` to override), defined from a generated XML with
+  virtio-blk and a serial file. `kvm_probe` refuses the backend with the first
+  missing item and its install command (`/dev/kvm`, a reachable libvirt URI,
+  `qemu-img`/`virt-install`/`xorriso`/`mkfs.ext4`/`ssh`/`ssh-keygen`, a podman or
+  docker image transport, a writable storage root). `create`/`start`/`stop`/
+  `status`/`destroy` are libvirt domain lifecycle operations; `enter`/exec are SSH;
+  `logs` tails the serial file; `root`/`rescue` attach to the serial console;
+  `backup`/`restore` move the agent home over the same SSH channel (a stopped VM is
+  booted for the transfer and stopped again); `snapshot` converts the disk. Readiness
+  is a bounded poll for domain state, SSH and the guest's first-boot marker, never a
+  `sleep`. The presentation channel is `hostfwd=tcp:127.0.0.1:<port>-:3080`, so a URL
+  requested inside the VM opens on the host's loopback - no data is copied out.
+  The seed opens port 3080 in the guest firewall for the user-mode gateway range
+  `10.0.2.0/24`, so the loopback forward reaches the agent web UI.
+  Ephemeral mode is refused for `kvm` (a VM cannot be re-created per invocation
+  without paying the boot cost). The image build now installs `cloud-init`,
+  `openssh-server` and `qemu-guest-agent`; `tests/kvm.sh` drives fake
+  `virsh`/`virt-install`/`qemu-img`/`ssh` binaries and asserts the probe outcomes,
+  refusal messages, XML, seed, hostfwd mapping, SSH argv, transfers and state
+  transitions - it never needs `/dev/kvm`. `docs/backend-model.md` replaces the
+  "future" section with the implemented behaviour and the captured boot, and
+  README/SECURITY/containers/architecture document the boundary and the channel.
+
 - `./install.sh root <name> on|off|status` makes root inside the instance a live,
   user-controlled switch instead of something fixed when the container is created.
   `on` writes `/etc/sudoers.d/agent-workspace` (`NOPASSWD`, mode 0440) only after

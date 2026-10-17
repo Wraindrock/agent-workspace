@@ -40,11 +40,12 @@ state_engine_soft() {
   local engine
   engine="$(state_get "${1}" ENGINE)"
   [[ -n "$engine" ]] || engine="$ENGINE"
-  if command -v "$engine" >/dev/null 2>&1; then
+  if command -v "$(backend_bin "$engine")" >/dev/null 2>&1; then
     ENGINE="$engine"
     # Engine binary is read by the backend file loaded below rather than here;
-    # exporting it keeps that cross-file use (and shellcheck) honest.
-    ENGINE_BIN="$engine"
+    # exporting it keeps that cross-file use (and shellcheck) honest. kvm drives
+    # virsh, so the binary comes from backend_bin rather than the backend name.
+    ENGINE_BIN="$(backend_bin "$engine")"
     export ENGINE_BIN
     # Soft path: an instance recorded by a backend this tree no longer ships is
     # still worth reporting on, so a missing implementation file is not fatal.
@@ -1126,7 +1127,7 @@ cmd_doctor() {
   else
     while IFS= read -r engine; do
       [[ -n "$engine" ]] || continue
-      report_ok_k doc_engine "${engine}" "$("$engine" --version 2>/dev/null | head -n 1)"
+      report_ok_k doc_engine "${engine}" "$(backend_version_line "${engine}")"
     done <<<"$available"
   fi
   # Every backend, not just the installed ones: a host with nothing installed is
@@ -1153,8 +1154,8 @@ cmd_doctor() {
     heading_k head_container "${name}"
     state_engine_soft "$name"
     engine="$(state_get "$name" ENGINE)"
-    if ! command -v "$engine" >/dev/null 2>&1; then
-      report_bad_k doc_engine_missing "${engine}"
+    if ! command -v "$(backend_bin "$engine")" >/dev/null 2>&1; then
+      report_bad_k doc_engine_missing "$(backend_bin "$engine")"
       problems=$((problems + 1))
     elif eng_container_exists "$name"; then
       status="$(eng_container_status "$name")"
@@ -1165,7 +1166,7 @@ cmd_doctor() {
     fi
 
     image="$(container_run_image "$name")"
-    if command -v "$engine" >/dev/null 2>&1; then
+    if command -v "$(backend_bin "$engine")" >/dev/null 2>&1; then
       if eng_image_exists "$image"; then
         report_ok_k doc_image_present "${image}"
       else
@@ -1176,7 +1177,7 @@ cmd_doctor() {
 
     volume="$(container_home_volume "$name")"
     if [[ "$(container_mode "$name")" == "persistent" ]]; then
-      if command -v "$engine" >/dev/null 2>&1 && eng_volume_exists "$volume"; then
+      if command -v "$(backend_bin "$engine")" >/dev/null 2>&1 && eng_volume_exists "$volume"; then
         report_ok_k doc_volume_present "${volume}"
       else
         report_bad_k doc_volume_missing "${volume}"
@@ -1197,7 +1198,7 @@ cmd_doctor() {
     fi
 
     web="$(state_get "$name" WEB)"
-    if [[ "$web" == "1" ]] && command -v "$engine" >/dev/null 2>&1 && eng_container_exists "$name"; then
+    if [[ "$web" == "1" ]] && command -v "$(backend_bin "$engine")" >/dev/null 2>&1 && eng_container_exists "$name"; then
       local mapped
       mapped="$(eng_host_port "$name" "${WEB_CONTAINER_PORT:-3080}")"
       if [[ -n "$mapped" ]]; then

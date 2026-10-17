@@ -8,6 +8,7 @@ install_rpms \
   bash-completion \
   bind-utils \
   ca-certificates \
+  cloud-init \
   curl \
   dnf5-plugins \
   findutils \
@@ -20,7 +21,9 @@ install_rpms \
   jq \
   less \
   openssh-clients \
+  openssh-server \
   procps-ng \
+  qemu-guest-agent \
   psmisc \
   rsync \
   sudo \

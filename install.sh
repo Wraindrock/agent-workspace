@@ -105,10 +105,11 @@ declare -A BOOTSTRAP_SHA256_MAIN=(
   [installer/lib/backend-container-cli.sh]="af218605697b220d8579d97ce1cde92ce4e36ea1ce848e89e51ab123b1f34166"
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="8ffce79bfe419a93216340f75b48b0407495dd55df6e7818c482c924c37b4a55"
+  [installer/lib/backend-kvm.sh]="3a88a8e96cf0a5580ed2acad7b0b11f309e1987130cf257db73f034b6588703f"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="74d82f6f3e15f2b09fa4dee3847b23204adcb295ab19a596ab83ff6eaa9e84b2"
-  [installer/lib/engine.sh]="282a280c45281eeafe3a130df3038fe1813caf0031ee3eccc7f6bbc3c34ca9cc"
-  [installer/lib/i18n.sh]="1fd9c961261c2415e4848bb0c27c64653ad4304cf1f2b65a10774bb6297e58ab"
+  [installer/lib/commands.sh]="752239d1d84a7ecb867264b0bcb41b3615b08883deb10ccbc78739345d2a55d2"
+  [installer/lib/engine.sh]="7b53dec5b9a928109422bcac3e4050ec1a26efc5608da0fd249bf4ab74dab161"
+  [installer/lib/i18n.sh]="4f2683840aaa1c46a0290d629ca9413403c3f3124242b3d106898da2b24ef77e"
   [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
@@ -118,10 +119,11 @@ declare -A BOOTSTRAP_SHA256_DEV=(
   [installer/lib/backend-container-cli.sh]="af218605697b220d8579d97ce1cde92ce4e36ea1ce848e89e51ab123b1f34166"
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="8ffce79bfe419a93216340f75b48b0407495dd55df6e7818c482c924c37b4a55"
+  [installer/lib/backend-kvm.sh]="3a88a8e96cf0a5580ed2acad7b0b11f309e1987130cf257db73f034b6588703f"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="74d82f6f3e15f2b09fa4dee3847b23204adcb295ab19a596ab83ff6eaa9e84b2"
-  [installer/lib/engine.sh]="282a280c45281eeafe3a130df3038fe1813caf0031ee3eccc7f6bbc3c34ca9cc"
-  [installer/lib/i18n.sh]="1fd9c961261c2415e4848bb0c27c64653ad4304cf1f2b65a10774bb6297e58ab"
+  [installer/lib/commands.sh]="752239d1d84a7ecb867264b0bcb41b3615b08883deb10ccbc78739345d2a55d2"
+  [installer/lib/engine.sh]="7b53dec5b9a928109422bcac3e4050ec1a26efc5608da0fd249bf4ab74dab161"
+  [installer/lib/i18n.sh]="4f2683840aaa1c46a0290d629ca9413403c3f3124242b3d106898da2b24ef77e"
   [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
@@ -131,6 +133,7 @@ BOOTSTRAP_FILES=(
   installer/lib/backend-container-cli.sh
   installer/lib/backend-docker.sh
   installer/lib/backend-incus.sh
+  installer/lib/backend-kvm.sh
   installer/lib/backend-podman.sh
   installer/lib/commands.sh
   installer/lib/engine.sh

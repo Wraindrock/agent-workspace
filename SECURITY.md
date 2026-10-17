@@ -51,12 +51,42 @@ rotation of anything that leaked.
   so container root is not host root, exactly as with the container backends; agent
   credentials reach the daemon on stdin (`config set <name> environment.KEY -`)
   instead of on a command line, so they stay out of `ps` and the shell history.
+- **The `kvm` backend is a VM boundary, not a container boundary.** A `kvm`
+  workspace is a QEMU process run by `virsh --connect qemu:///session` as your user,
+  with its own guest kernel and root filesystem, no host directory mounted and no
+  container runtime in the path. Root inside the guest is guest root: it does not
+  become host root, and a guest kernel compromise has to escape QEMU/KVM before it
+  reaches this host. Two honest limits: KVM is a Linux kernel feature, so the host
+  kernel is still in the TCB (a QEMU/KVM or hardware vulnerability reaches the host,
+  exactly like a container escape but through a different surface); and the default
+  `qemu:///session` keeps the domain running as your user with user-mode networking,
+  which is why only loopback forwards are created. `qemu:///system` is opt-in -
+  it hands the domain to the system libvirt daemon and its `qemu` user - and it is
+  never selected automatically. The per-instance SSH private key is stored host-side
+  at `${AW_KVM_ROOT:-...}/<name>/id_ed25519` with mode 0600, only the public key is
+  injected into the guest; the seed ISO that carries it stays next to the disk
+  (it contains the public key, not a secret). The serial console has root
+  autologin on `ttyS0` inside the guest: anyone who can already run commands as
+  this host user can attach to it, so it adds no host-side power - but it does mean
+  guest root is reachable without the SSH key, and the console log written next to
+  the disk can contain whatever the guest printed.
+- **The presentation channel is one loopback forward, never a mount.** A URL
+  requested inside an instance reaches the host only because the backend publishes
+  exactly one host port on `127.0.0.1`: `--publish 127.0.0.1:<port>:3080` for
+  containers, a `proxy` device bound to `127.0.0.1` for Incus, and
+  `hostfwd=tcp:127.0.0.1:<port>-:3080` (plus the SSH forward) for KVM. Nothing is
+  copied out of the instance to make a page load, the forwarded port is never bound
+  to a non-loopback address by this installer, and the address the user opens is
+  always `127.0.0.1:<port>`. The forward exposes whatever the agent chose to serve
+  on that port; the traffic is plain HTTP on loopback, so a shared host user can
+  read it - do not serve secrets to a host you do not trust.
 - **Data lives inside the instance, and the engine volume is not a host
   boundary.** `install.sh` no longer bind-mounts a host directory into an
   instance: the agent works in `/home/agent`, which is a named engine volume for
-  `podman`/`docker` and the instance disk plus the installer-managed
-  `~/.local/share/agent-workspace/incus/homes/<name>` directory for `incus`. That
-  storage is engine-managed and survives the instance, but it is **not** secret
+  `podman`/`docker`, the instance disk plus the installer-managed
+  `~/.local/share/agent-workspace/incus/homes/<name>` directory for `incus`, and the
+  instance's qcow2 for `kvm`. That storage is engine-managed and survives the
+  instance, but it is **not** secret
   from the host user: a rootless engine runs as you, and `incusd`'s home
   directory is a normal host directory. It protects your data from a damaged
   instance, not from the host account. `backup` archives are plain `tar.gz` files

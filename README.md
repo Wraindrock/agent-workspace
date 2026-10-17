@@ -289,8 +289,9 @@ when the manifest cannot be read. Full reference:
 ## Where the data lives: backup, restore and rescue
 
 A persistent instance keeps the agent's whole working tree under `/home/agent`,
-inside engine-managed storage: a named volume for `podman`/`docker`, and the
-instance's own disk plus an installer-managed home directory for `incus`. No host
+inside engine-managed storage: a named volume for `podman`/`docker`, the
+instance's own disk plus an installer-managed home directory for `incus`, and the
+instance's qcow2 for `kvm`. No host
 directory is bind-mounted into the instance any more, so creating or entering a
 container never makes a folder on this host the agent's working directory. The
 installer's own state - credentials, the backend choice, metadata and snapshots -
@@ -436,16 +437,17 @@ just verify    # build + every container-level test
 just verify-all # the above plus the engine-free contract tests
 ~~~
 
-Requirements: one backend - `podman`, `docker` or `incus` (see [Backends](#backends));
-`kvm` is the recommended one but is not implemented yet - plus `bash` 4.4+ for
+Requirements: one backend - `kvm` (recommended when `/dev/kvm` exists; needs
+libvirt + QEMU + `podman`/`docker`), `podman`, `docker` or `incus` (see
+[Backends](#backends)) - plus `bash` 4.4+ for
 `install.sh`. Building and linting additionally want `just`; the lint uses
 `shellcheck`, `actionlint` and `python3` + `pyyaml` when they are present and skips them when they are not; `tests/smoke.sh`
 separately needs `jq`. CI installs `actionlint` and `just` explicitly, and relies on
 the runner image for `shellcheck`, `jq` and `python3`. Every pull request runs the
-same eleven test scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
+same twelve test scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
 `tests/integration.sh`, `tests/portability.sh`, `tests/decoupling.sh`,
-`tests/contract.sh`, `tests/firstboot.sh`, `tests/bootstrap.sh`, `tests/i18n.sh` and
-`tests/incus.sh`. `tests/integration.sh` creates a real
+`tests/contract.sh`, `tests/firstboot.sh`, `tests/bootstrap.sh`, `tests/i18n.sh`,
+`tests/incus.sh` and `tests/kvm.sh`. `tests/integration.sh` creates a real
 container through `install.sh`, and `tests/portability.sh` proves the image boots
 on a host whose kernel settings were never tuned; both need a host where rootless
 podman can boot systemd (see
@@ -531,14 +533,15 @@ keeps the backend it was created with; `install.sh doctor` shows both.
 
 | backend | what the workspace is | trade-off |
 | --- | --- | --- |
-| `kvm` **recommended** | a complete system: its own kernel, init and modules | operations that need a kernel work; costs building the image into a bootable disk and giving up real memory and disk |
+| `kvm` **recommended** | a complete system: its own kernel, init and modules, booted by libvirt/QEMU | operations that need a kernel work; costs building the image into a bootable qcow2 and giving up real memory and disk |
 | `podman` **recommended** | a rootless container in your podman | lightest and fastest, no preparation; shares the host kernel, so some operations are structurally impossible |
 | `docker` alternative | a container in your docker | same kernel-sharing trade-off; needs `--privileged --cgroupns=host` for an in-instance init (the installer adds them); useful where docker is already your tool |
 | `incus` *not selectable in this version* | an unprivileged Incus *instance* | kept visible and implemented; selecting it is refused on this host system for now |
 
 The list is annotated with what the host actually has: a backend that is not
-installed is marked `not installed`, and `incus` is marked `not selectable in this
-version`.
+installed is marked `not installed`, `kvm` additionally reports the first missing
+item (device, libvirt URI, tool or storage) and the package command that would fix
+it, and `incus` is marked `not selectable in this version`.
 
 ### Incus is visible, not hidden
 
@@ -580,6 +583,39 @@ with `podman` (or `docker`, whichever is present), pipes the rootfs through
 tag re-imports only when its digest actually changed. `docs/containers.md` has the
 per-backend details and what is still unverified.
 
+### KVM: a VM made from the same image
+
+`--backend kvm` boots the image's own rootfs under KVM instead of running it as a
+container. It is the recommendation when `/dev/kvm` exists, and it needs one
+one-time host preparation the installer never performs for you (the probe names
+exactly what is missing and prints the package command):
+
+~~~bash
+# Fedora: sudo dnf install libvirt virt-install qemu-img xorriso e2fsprogs podman
+# Arch:   sudo pacman -S libvirt virt-install xorriso e2fsprogs podman
+sudo systemctl enable --now virtqemud.socket virtnetworkd.socket
+~~~
+
+It drives `qemu:///session` by default - rootless, user-mode networking, no system
+service - and stores instances under
+`${XDG_DATA_HOME:-~/.local/share}/agent-workspace/vms`. `AW_KVM_URI` and
+`AW_KVM_ROOT` override the URI and the storage root; `qemu:///system` is opt-in,
+never automatic.
+
+The build path is the one Phase A proved and the backend implements: export the OCI
+rootfs, use the image's own bootc kernel and initramfs, build a rootless ext4 image
+inside an unprivileged user namespace (`unshare -r`, so root-only modes and ownership
+are recorded without host root), convert it to qcow2, and
+boot it direct-kernel (`root=/dev/vda rw console=ttyS0`). A NoCloud cloud-init seed
+ISO creates the `agent` user and installs a per-instance SSH key, so `enter`,
+`backup` and `restore` are plain SSH streams. The serial console is the rescue path
+(`root`/`rescue`), and `logs` tails it. Guest port 3080 is published as
+`hostfwd=tcp:127.0.0.1:<port>-:3080`, so a URL requested inside the VM is reachable
+on the host loopback - the same presentation rule as the other backends, with no
+data copied out. `ephemeral` mode is deliberately refused for VMs. The full design,
+the captured console excerpt and the exact `virt-install` command are in
+[docs/backend-model.md](docs/backend-model.md#kvm-the-oci-image-as-a-bootable-vm).
+
 ## Notes and limitations
 
 - GHCR creates a new package **private**. This project's package is public, so
@@ -598,6 +634,10 @@ per-backend details and what is still unverified.
 - The `incus` backend is visible but not selectable in this version, and needs the
   one-time host step in [Backends](#backends) before it can be used. Its instance
   is unprivileged, so the container's root is a sub-uid of yours rather than host root.
+- The `kvm` backend is a real VM with its own kernel: root inside is guest root, not
+  host root, and the boundary is the hypervisor rather than a shared kernel. It needs
+  `/dev/kvm`, libvirt and a `podman`/`docker` helper to export the image, and it uses
+  more memory and disk than a container. It refuses `ephemeral` mode.
 - Booting systemd in a container needs host kernel headroom. The kernel charges
   inotify instances per *user* (`fs.inotify.max_user_instances`, 128 by default),
   a desktop session spends most of that budget, and once it is gone the container

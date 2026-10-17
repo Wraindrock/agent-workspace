@@ -396,8 +396,13 @@ fi
 # --- preference order ------------------------------------------------------
 echo "preference"
 names="$(run_backend 'backend_names')" || true
-if [[ "$(printf '%s\n' "$names" | head -n 1)" == "incus" ]]; then
-  pass "backend_names puts incus first when the daemon answers"
+first="$(printf '%s\n' "$names" | head -n 1)"
+# kvm, when this host can use it, is deliberately listed before incus; on a
+# runner without /dev/kvm or virsh incus is first. What this file owns is that
+# incus is still detected through the fake daemon and stays in the candidate
+# list - not that it wins the order on every host.
+if [[ ( "$first" == "incus" || "$first" == "kvm" ) ]] && printf '%s\n' "$names" | grep -qx incus; then
+  pass "backend_names lists incus (first unless a usable kvm outranks it)"
 else
   fail "backend_names answered '$(printf '%s' "$names" | paste -sd, -)'"
 fi
