@@ -11,6 +11,10 @@ rm -rf /var/tmp/* 2>/dev/null || true
 # dnf5 keeps transaction state in /run/dnf, and /run must be empty in the image:
 # `bootc container lint` flags it as nonempty-run-tmp otherwise.
 rm -rf /run/dnf
+# Installing cloud-init writes a runtime stamp under /run/cloud-init, and
+# /run must be empty in the image: bootc container lint flags it as
+# nonempty-run-tmp (the KVM backend seeds cloud-init at boot instead).
+rm -rf /run/cloud-init
 # pipx logs every command and keeps a cache beside it. Both are build artifacts
 # of the image-wide pipx home (/opt/pipx -> /var/opt/pipx) and must not ship.
 rm -rf /var/opt/pipx/logs /var/opt/pipx/.cache
