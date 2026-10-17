@@ -282,7 +282,6 @@ VOLUME_PREFIX="agent-workspace"
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 AGENT_USER="agent"
 IMAGE=""
-ENGINE_REQUEST=""
 BACKEND_REQUEST=""
 # 1 when --backend/--engine was given: an explicit name is never written back
 # over the remembered choice and gets its own wording when it is missing.
@@ -854,7 +853,6 @@ require_engine() {
   # is the honest answer to "--backend incus", not "install a backend".
   if [[ "${BACKEND_EXPLICIT:-0}" -eq 1 ]]; then
     resolve_backend_choice
-    ENGINE_REQUEST="$BACKEND_REQUEST"
     resolve_backend "$BACKEND_REQUEST" "$BACKEND_EXPLICIT"
     return 0
   fi
@@ -877,7 +875,6 @@ require_engine() {
   # list it prints when it has to ask would then end up inside "$(...)" and never
   # be shown - the exact "refused with no list" this behaviour removes.
   resolve_backend_choice
-  ENGINE_REQUEST="$BACKEND_REQUEST"
   resolve_backend "$BACKEND_REQUEST" "$BACKEND_EXPLICIT"
 }
 
@@ -925,8 +922,8 @@ resolve_backend_choice() {
 parse_args() {
   while [[ "${#}" -gt 0 ]]; do
     case "${1}" in
-      --backend|--engine) BACKEND_REQUEST="${2}"; ENGINE_REQUEST="${2}"; BACKEND_EXPLICIT=1; shift 2 ;;
-      --backend=*|--engine=*) BACKEND_REQUEST="${1#*=}"; ENGINE_REQUEST="${1#*=}"; BACKEND_EXPLICIT=1; shift ;;
+      --backend|--engine) BACKEND_REQUEST="${2}"; BACKEND_EXPLICIT=1; shift 2 ;;
+      --backend=*|--engine=*) BACKEND_REQUEST="${1#*=}"; BACKEND_EXPLICIT=1; shift ;;
       --image) IMAGE="${2}"; UPGRADE_IMAGE="${2}"; shift 2 ;;
       --image=*) IMAGE="${1#*=}"; UPGRADE_IMAGE="${1#*=}"; shift ;;
       --no-tui) NO_TUI=1; shift ;;
