@@ -102,14 +102,21 @@ matches that declaration.
 | --- | --- | --- | --- |
 | image layer (ostree) | everything the modules install | no: the new image replaces it | no |
 | container layer | `/etc`, `/var` and `/usr/local` - whatever the agent installed or edited while running | no (capture it with `install.sh snapshot` first) | yes |
-| named volume | `/home/agent`, the agent's home | yes: the volume outlives the container | yes |
-| host bind mount | the directory you passed as `--workspace`, mounted at `/workspace` | entirely the host's business | yes |
+| named volume | `/home/agent`, the agent's home and working directory | yes: the volume outlives the container | yes |
 
-The practical rule: **declaration lives in the image, the agent's own state lives
-in its home volume and the container layer, and the code lives on the host.**
+There is deliberately no host bind mount in that table. An instance's data lives
+inside the instance's own storage - the named volume for `podman`/`docker`, the
+instance disk plus its installer-managed home directory for `incus` - so the
+host's `--workspace` field is recorded for compatibility but never acted on.
+Nothing on the host is shared into the agent's working tree. The installer's own
+state (credentials, backend choice, metadata, snapshots) stays on the host under
+`~/.config` and `~/.local/share`.
+
+The practical rule: **declaration and the agent's code both live in storage the
+installer controls, and the agent's persistent state lives in its home volume.**
 Anything a module installs must land in the image; anything the agent produces
-should land in `/home/agent` or `/workspace`, which are the two things a
-`snapshot`, a `rollback` and a `fork` actually carry.
+lands under `/home/agent`, which is what `snapshot`, `rollback` and `fork` carry,
+and what `backup`/`restore` archive and verify.
 
 The default DSH plugin set is the one deliberate exception, and it is worth naming
 because it looks like a violation: the plugin set is installed into the image

@@ -102,26 +102,26 @@ INSTALL_BASE_URL="${AW_INSTALL_BASE_URL:-https://raw.githubusercontent.com/${INS
 declare -A BOOTSTRAP_SHA256_MAIN=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="ded1984af47e0a7bab18ef4f8e4db4d087225411298e182d483c06f81c4aa029"
-  [installer/lib/backend-container-cli.sh]="3eda5c68118fd18457d1fe7c1bcf1eb6e128e8dd80cb0a82ac0bd6e80dc645be"
+  [installer/lib/backend-container-cli.sh]="af218605697b220d8579d97ce1cde92ce4e36ea1ce848e89e51ab123b1f34166"
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
-  [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
+  [installer/lib/backend-incus.sh]="8ffce79bfe419a93216340f75b48b0407495dd55df6e7818c482c924c37b4a55"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="2c4513a56855430664ea67da883c35778cbac79a0c3c181b93a5c62b17026bfb"
-  [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
-  [installer/lib/i18n.sh]="817d79ddfc34ee1ce3f446f7a0762a93d6272384598f72fee0293925eeffcd30"
+  [installer/lib/commands.sh]="74d82f6f3e15f2b09fa4dee3847b23204adcb295ab19a596ab83ff6eaa9e84b2"
+  [installer/lib/engine.sh]="282a280c45281eeafe3a130df3038fe1813caf0031ee3eccc7f6bbc3c34ca9cc"
+  [installer/lib/i18n.sh]="1fd9c961261c2415e4848bb0c27c64653ad4304cf1f2b65a10774bb6297e58ab"
   [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
   [image.env]="29676fadd4ad060b599ab57d5486704bf9f8196bb1cb007716de14b0efad332a"
   [installer/lib/agents.sh]="ded1984af47e0a7bab18ef4f8e4db4d087225411298e182d483c06f81c4aa029"
-  [installer/lib/backend-container-cli.sh]="3eda5c68118fd18457d1fe7c1bcf1eb6e128e8dd80cb0a82ac0bd6e80dc645be"
+  [installer/lib/backend-container-cli.sh]="af218605697b220d8579d97ce1cde92ce4e36ea1ce848e89e51ab123b1f34166"
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
-  [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
+  [installer/lib/backend-incus.sh]="8ffce79bfe419a93216340f75b48b0407495dd55df6e7818c482c924c37b4a55"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="2c4513a56855430664ea67da883c35778cbac79a0c3c181b93a5c62b17026bfb"
-  [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
-  [installer/lib/i18n.sh]="817d79ddfc34ee1ce3f446f7a0762a93d6272384598f72fee0293925eeffcd30"
+  [installer/lib/commands.sh]="74d82f6f3e15f2b09fa4dee3847b23204adcb295ab19a596ab83ff6eaa9e84b2"
+  [installer/lib/engine.sh]="282a280c45281eeafe3a130df3038fe1813caf0031ee3eccc7f6bbc3c34ca9cc"
+  [installer/lib/i18n.sh]="1fd9c961261c2415e4848bb0c27c64653ad4304cf1f2b65a10774bb6297e58ab"
   [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
@@ -314,6 +314,7 @@ OPT_COUNT=""
 OPT_MODE=""
 OPT_WORKSPACE=""
 OPT_TO=""
+OPT_COPY=""
 UPGRADE_IMAGE=""
 OPT_FROM=""
 SNAPSHOT_LABEL=""
@@ -533,9 +534,9 @@ spec_add() {
 
 show_specs() {
   local index
-  printf '%-18s %-10s %-11s %s\n' "$(t col_name)" "$(t col_agent)" "$(t col_mode)" "$(t col_workspace)"
+  printf '%-18s %-10s %s\n' "$(t col_name)" "$(t col_agent)" "$(t col_mode)"
   for index in "${!SPEC_NAME[@]}"; do
-    printf '%-18s %-10s %-11s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
+    printf '%-18s %-10s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}"
   done
 }
 
@@ -560,7 +561,6 @@ parse_declaration() {
     validate_name "$name" || die "${source}:${lineno}: invalid container name '${name}'"
     agent_known "$agent" || die "${source}:${lineno}: unknown agent '${agent}'"
     [[ "$mode" == "persistent" || "$mode" == "ephemeral" ]] || die "${source}:${lineno}: unknown mode '${mode}'"
-    [[ -n "$workspace" ]] || workspace="$(default_workspace "$name")"
     spec_add "$name" "$agent" "$mode" "$workspace"
   done
   exec 0<&3 3<&-
@@ -569,9 +569,9 @@ parse_declaration() {
 save_specs() {
   local file="${1}" index
   {
-    printf '# name agent mode workspace\n'
+    printf '# name agent mode\n'
     for index in "${!SPEC_NAME[@]}"; do
-      printf '%s %s %s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}" "${SPEC_WORKSPACE[index]}"
+      printf '%s %s %s\n' "${SPEC_NAME[index]}" "${SPEC_AGENT[index]}" "${SPEC_MODE[index]}"
     done
   } >"$file"
   ok_k wrote_file "${file}"
@@ -595,9 +595,6 @@ create_specs() {
       continue
     fi
     heading_k head_creating "${name}" "${agent}" "${mode}"
-    if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
-      install -d -m 0755 "$workspace" 2>/dev/null || true
-    fi
     local -a envs=()
     local -a needed=()
     local key
@@ -658,7 +655,9 @@ wizard_create() {
       "$(t mode_persistent_desc)" \
       "$(t mode_ephemeral_desc)")" || die_k cancelled
     mode="${choice%% *}"
-    workspace="$(ui_input "$(t prompt_workspace)" "$(default_workspace "$name")")"
+    # Instance data lives inside the instance; the former host workspace is no
+    # longer prompted for. The field stays empty in the state for compatibility.
+    workspace=""
     for key in $(agent_envs_for "$agent_choice"); do
       collect_secret "$agent_choice" "$key"
     done
@@ -686,7 +685,7 @@ do_create() {
         name="${base}"
       fi
       validate_name "$name" || die_k err_invalid_name "${name}"
-      workspace="${OPT_WORKSPACE:-$(default_workspace "$name")}"
+      workspace="${OPT_WORKSPACE:-}"
       spec_add "$name" "$agent" "$mode" "$workspace"
       local key
       for key in $(agent_envs_for "$agent"); do
@@ -823,6 +822,12 @@ dispatch() {
     snapshots) need_arg; cmd_snapshots "${ARGS[1]}" ;;
     rollback) need_arg; cmd_rollback "${ARGS[1]}" "${OPT_TO:-}" ;;
     recover) need_arg; cmd_recover "${ARGS[1]}" ;;
+    backup) need_arg; cmd_backup "${ARGS[1]}" "${OPT_TO:-}" ;;
+    restore)
+      [[ "${#ARGS[@]}" -ge 3 ]] || die_k err_restore_args
+      cmd_restore "${ARGS[1]}" "${ARGS[2]}"
+      ;;
+    rescue) need_arg; cmd_rescue "${ARGS[1]}" ;;
     fork)
       [[ "${#ARGS[@]}" -ge 3 ]] || die_k err_fork_args
       cmd_fork "${ARGS[1]}" "${ARGS[2]}" "${OPT_AGENT:-}" "${OPT_MODE:-}" "${OPT_WORKSPACE:-}" "${OPT_FROM:-}"
@@ -942,6 +947,8 @@ parse_args() {
       --live) FORK_LIVE=1; shift ;;
       --label) SNAPSHOT_LABEL="${2}"; shift 2 ;;
       --to) OPT_TO="${2}"; shift 2 ;;
+      --copy) OPT_COPY="${2}"; shift 2 ;;
+      --copy=*) OPT_COPY="${1#*=}"; shift ;;
       --from) OPT_FROM="${2}"; shift 2 ;;
       --agent) OPT_AGENT="${2}"; shift 2 ;;
       --name) OPT_NAME="${2}"; shift 2 ;;
@@ -1050,7 +1057,7 @@ main() {
   # before require_engine so a typo is reported as a typo even on a host
   # that has not chosen a backend yet.
   case "${ARGS[0]:-}" in
-    create|list|ls|start|stop|restart|enter|shell|web|logs|snapshot|snapshots|rollback|recover|fork|upgrade|remove|rm|backend|doctor|root|help) ;;
+    create|list|ls|start|stop|restart|enter|shell|web|logs|snapshot|snapshots|rollback|recover|backup|restore|rescue|fork|upgrade|remove|rm|backend|doctor|root|help) ;;
     *) die_k err_unknown_command "${ARGS[0]:-}" ;;
   esac
 

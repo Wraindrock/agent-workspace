@@ -212,20 +212,27 @@ case "$cmd" in
               data="$(host_dir_for /data || true)"
               [[ -n "$target" ]] || { printf 'no backup mount\n' >&2; exit 1; }
               [[ -n "$data" ]] || { printf 'no data mount\n' >&2; exit 1; }
+              # The installer archives a whole volume (".") and, for rescue
+              # --copy, one path (the last argument). Neither the archive name
+              # nor the path may be hard-coded here.
+              archive="${command_args[1]##*/}"
+              rel="${command_args[${#command_args[@]}-1]}"
+              [[ "$rel" == -* ]] && rel="."
               if [[ "${FAKE_ENGINE_BAD_ARCHIVE:-0}" == "1" ]]; then
                 # a write that "succeeds" but leaves an unreadable archive
-                printf 'not a tarball\n' >"${target}/home.tar.gz"
+                printf 'not a tarball\n' >"${target}/${archive}"
               else
-                tar czf "${target}/home.tar.gz" -C "$data" .
+                tar czf "${target}/${archive}" -C "$data" "$rel"
               fi
               exit 0
               ;;
             xzf*)
               src="$(host_dir_for /backup || true)"
               dest="$(host_dir_for /data || true)"
-              [[ -n "$src" && -f "${src}/home.tar.gz" ]] || { printf 'no archive\n' >&2; exit 1; }
+              archive="${command_args[1]##*/}"
+              [[ -n "$src" && -f "${src}/${archive}" ]] || { printf 'no archive\n' >&2; exit 1; }
               [[ -n "$dest" ]] || { printf 'no data mount\n' >&2; exit 1; }
-              tar xzf "${src}/home.tar.gz" -C "$dest"
+              tar xzf "${src}/${archive}" -C "$dest"
               : >"${dest}/restored"
               exit 0
               ;;

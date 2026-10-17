@@ -34,9 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/ins
 ~~~
 
 TUI 会依次问你：容器里装哪个 agent、容器叫什么名字、生命周期选 **persistent**
-（systemd 常驻，home 卷跨重启保留）还是 **ephemeral**（跑完即弃）、把主机上哪个
-目录挂载到 `/workspace`，以及那个 agent 需要的凭据。之后它创建好容器，并告诉你
-怎么进去。凭据会写进 `~/.config/agent-workspace/containers/` 下权限 `0600` 的文件，
+（systemd 常驻，home 卷跨重启保留）还是 **ephemeral**（跑完即弃），以及那个 agent
+需要的凭据。之后它创建好容器，并告诉你怎么进去。agent 的全部数据都放在实例自己的
+存储里，安装器不会把宿主目录共享进去。凭据会写进 `~/.config/agent-workspace/containers/` 下权限 `0600` 的文件，
 再以 `--env-file` 交给容器，绝不进镜像；如果你跳过这一步，容器照样会创建，但安装器
 会明确告诉你：在把密钥补进去之前，它的 agent 没有可用的模型。
 
@@ -83,13 +83,14 @@ cd agent-workspace
 同一个镜像也可以只用来跑一次性的沙箱：
 
 ~~~bash
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest dsh
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest dsh
 ~~~
 
-请用 **rootless** 方式运行（`podman`，而不是 `sudo podman`），这样 agent 写入
-`/workspace` 的文件归属你本人。install.sh 已经替你做好了这件事：home 目录放在
-命名卷里，你选的目录挂载到 `/workspace`。
+请用 **rootless** 方式运行（`podman`，而不是 `sudo podman`），这样一次性容器运行在
+你自己的用户命名空间里。这个容器不挂载宿主的任何目录；要留下东西就放进命名卷，或者
+在容器退出前复制出来。install.sh 会替你把它做持久：一个命名卷保存整个
+`/home/agent`（也就是 agent 的工作目录），`backup`/`restore`/`rescue` 负责把数据
+搬进搬出，而不必把宿主目录暴露给 agent。
 
 ### 在支持 bootc 的机器上（进阶、可选）
 
@@ -112,16 +113,15 @@ agent-workspace doctor       # 运行中的系统是否兑现了镜像的承诺
 默认镜像内置两个 harness，DSH 与 OpenCode：
 
 ~~~bash
-# 一个 agent 独占一套系统，代码挂载到 /workspace
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest dsh
+# 一个 agent 独占一套系统，数据留在容器自己的存储里
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest dsh
 
 # 换另一个内置 harness
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest opencode
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest opencode
 
-# systemd 是 PID 1，因此常驻容器可以像一台机器一样进去
-podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
+# systemd 是 PID 1，因此常驻容器可以像一台机器一样进去；
+# 命名卷独立于容器存在，保存 /home/agent 里的全部内容
+podman run -d --name agent-box --volume agent-box-home:/home/agent --systemd=always \
   ghcr.io/wraindrock/agent-workspace:latest
 podman exec -it agent-box /bin/bash
 ~~~
@@ -218,7 +218,7 @@ agent 容器里运行。见 [SECURITY.md](SECURITY.md)。想确认某个运行�
 安装器就是接口：可以交互，也可以一个动作一条子命令。
 
 ~~~bash
-./install.sh create --agent dsh --name dsh-box --workspace "$PWD"
+./install.sh create --agent dsh --name dsh-box
 ./install.sh list
 ./install.sh snapshot dsh-box --label before-refactor
 ./install.sh rollback dsh-box
@@ -229,8 +229,8 @@ agent 容器里运行。见 [SECURITY.md](SECURITY.md)。想确认某个运行�
 整组容器也可以写成声明文件，非交互地创建：
 
 ~~~
-# name       agent     lifecycle   workspace
-review-box   dsh       persistent  ~/work/review
+# name       agent     lifecycle
+review-box   dsh       persistent
 scratch      opencode  ephemeral
 ~~~
 
@@ -243,6 +243,40 @@ scratch      opencode  ephemeral
 只跑一条命令，退出即删除。agent 菜单以内置 `dsh`/`opencode` 为底、合并镜像的
 `agentCatalog`，既跟随构建，也在读不到 manifest 时保留内置项。完整说明见
 [docs/containers.md](docs/containers.md)。
+
+## 数据放在哪：备份、还原与救援
+
+持久化实例把 agent 的整个工作目录放在 `/home/agent`，处于引擎管理的存储里：
+`podman`/`docker` 下是命名卷，`incus` 下是实例自己的磁盘加上安装器管理的 home
+目录。创建和进入实例不再把宿主目录 bind mount 进去，所以宿主机上的文件夹不会
+变成 agent 的工作目录。安装器自己的状态（凭据、后端选择、元数据、快照）仍然放在
+宿主机的 `~/.config` 与 `~/.local/share` 下。
+
+数据的进出是显式且经过校验的：
+
+~~~bash
+./install.sh backup dsh-box                         # ./agent-workspace-backup-<name>-<UTC>.tar.gz
+./install.sh backup dsh-box --to /safe/dsh-box.tar.gz
+./install.sh restore dsh-box /safe/dsh-box.tar.gz   # 运行中的实例会被拒绝
+./install.sh rescue dsh-box                         # 进入实例内的 root shell
+./install.sh rescue dsh-box --copy notes.txt        # 把某个路径复制到当前目录
+~~~
+
+`backup` 归档 `/home/agent`，并在归档根目录写 `manifest.txt`（实例名、agent、
+生命周期、引擎、镜像与 digest、创建时间、数据标记）。它拒绝覆盖已有文件；写完
+立刻校验（必须能列出 `manifest.txt` 和 home 数据），校验失败会删掉半成品并以非
+零退出，而不是留下一个看起来成功的假象；成功时打印路径和成员数。`--dry-run`
+只打印计划，不写任何东西。
+
+`restore` 先校验来源归档，再动任何数据；运行中的实例会被拒绝（先停掉）。除非传
+`--skip-safety`，它会先把当前 home 卷克隆成 `<卷名>-pre-restore-<UTC 时间戳>`，
+打印副本名与条目数，然后才还原；还原后验证卷确实存在，并打印还原了多少条目。
+`--dry-run` 不改变任何东西。
+
+`rescue` 是进不去时的逃生口：实例停着就先启动它，然后打开实例内的交互式 root
+shell（需要终端），或者用 `--copy PATH` 把单个文件/目录复制出来。请在希望文件
+落地的主机目录里运行 `./install.sh rescue NAME --copy data/`，它会打印最终的宿主
+路径。`./install.sh root NAME off` 把 agent 账号锁住之后，也是靠它重新进去。
 
 ## 实例内的 root
 
@@ -431,10 +465,11 @@ sudo incus admin init --minimal            # 建默认存储池与 incusbr0 网�
 
 Incus 工作区有三点值得知道：
 
-- agent 的 home 是**宿主上的一个目录**
+- agent 的 home 是安装器管理的**宿主目录**
   （`~/.local/share/agent-workspace/incus/homes/<name>`），不是命名卷，用
-  `shift=true` 挂进实例后属主就是 agent 用户；`backup`、`fork`、`rollback` 都是拷文件，
-  没有 `podman commit`；
+  `shift=true` 挂进实例后属主就是 agent 用户。它是实例数据里唯一在宿主可见的一块
+  （由安装器自己创建和校验，不是你选的共享工作区目录）。`backup`、`fork`、`rollback`
+  都是拷文件，没有 `podman commit`；
 - web UI 由绑在 `127.0.0.1` 的 `proxy` 设备发布，因此端口依然只在回环上；
 - 它是**非特权实例**：容器里的 root 只是你用户的一个 subuid/subgid 映射，和别的后端
   一样共用宿主内核，**不是虚拟机**。

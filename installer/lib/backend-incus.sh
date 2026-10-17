@@ -14,7 +14,8 @@
 #                  and backup then use the tools the user already has, the data
 #                  stays inspectable, and an 8.5 GB image is never copied
 #                  because the workspace needs a new incarnation.
-#   workspace      the host directory, bind-mounted read-write
+#   workspace      no host directory is mounted: the agent works in the
+#                  instance's own /home/agent, which is the home device below
 #   web port       a proxy device listening on 127.0.0.1 only
 #   image          our OCI image, exported to a rootfs tarball with podman or
 #                  docker and imported into Incus once per image id
@@ -23,11 +24,11 @@
 #                  instance snapshot would not contain the host-directory home,
 #                  so advertising native snapshots here would be a lie.
 #
-# Both disk devices are added with shift=true: in an unprivileged Incus
-# instance the agent's uid is offset (1000000, not 1000), so an unshifted
-# mount of a host directory is read-only for the very user that has to work in
-# it. shift=true uses an idmapped mount instead (btrfs and modern kernels
-# support it), which is what makes /workspace writable for the agent.
+# The home device is added with shift=true: in an unprivileged Incus instance
+# the agent's uid is offset (1000000, not 1000), so an unshifted mount of a
+# host directory is read-only for the very user that has to work in it.
+# shift=true uses an idmapped mount instead (btrfs and modern kernels support
+# it), which is what makes /home/agent writable for the agent.
 #
 # Requires a one-time root step on the host - `sudo systemctl enable --now
 # incus.socket && sudo incus admin init --minimal` - and nothing else.
@@ -44,7 +45,6 @@ INCUS_STATE_DIR="${INCUS_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-w
 INCUS_HOMES_DIR="${INCUS_HOMES_DIR:-${INCUS_STATE_DIR}/homes}"
 INCUS_IMAGES_DIR="${INCUS_IMAGES_DIR:-${INCUS_STATE_DIR}/images}"
 INCUS_HOME_DEVICE="${INCUS_HOME_DEVICE:-home}"
-INCUS_WORKSPACE_DEVICE="${INCUS_WORKSPACE_DEVICE:-workspace}"
 INCUS_WEB_DEVICE="${INCUS_WEB_DEVICE:-web}"
 
 # dry-run aware version of run_engine for the *other* CLI (podman or docker),
@@ -319,6 +319,17 @@ eng_volume_archive() {
   tar czf "$archive" -C "$(_incus_home_dir "$volume")" .
 }
 
+# eng_volume_export_path VOLUME REL OUTDIR IMAGE
+#
+# The Incus home is a host-side directory the daemon is not needed to read, so
+# a single path can be tarred straight out of it. REL is relative to the home
+# root and has already been checked by the caller not to escape it.
+eng_volume_export_path() {
+  local volume="$1" rel="$2" outdir="$3" image="$4"
+  _incus_dry tar czf "$outdir/rescue.tar.gz" -C "$(_incus_home_dir "$volume")" -- "$rel" && return 0
+  tar czf "$outdir/rescue.tar.gz" -C "$(_incus_home_dir "$volume")" -- "$rel"
+}
+
 # eng_volume_restore_archive VOLUME ARCHIVE IMAGE
 eng_volume_restore_archive() {
   local volume="$1" archive="$2" home
@@ -387,11 +398,9 @@ _incus_labels() {
 }
 
 _incus_devices() {
-  local name="$1" home="$2" workspace="$3" web_port="$4"
+  local name="$1" home="$2" web_port="$3"
   run_engine config device add "$name" "$INCUS_HOME_DEVICE" disk \
     source="$home" path="/home/${AGENT_USER}" shift=true
-  run_engine config device add "$name" "$INCUS_WORKSPACE_DEVICE" disk \
-    source="$workspace" path=/workspace shift=true
   if [[ -n "$web_port" ]]; then
     run_engine config device add "$name" "$INCUS_WEB_DEVICE" proxy \
       "listen=tcp:127.0.0.1:${web_port}" "connect=tcp:127.0.0.1:${WEB_CONTAINER_PORT:-3080}"
@@ -399,16 +408,19 @@ _incus_devices() {
 }
 
 _incus_instance_ready() {
-  local name="$1" image="$2" agent="$3" mode="$4" home="$5" workspace="$6" env_file="$7" web_port="$8"
+  local name="$1" image="$2" agent="$3" mode="$4" home="$5" env_file="$6" web_port="$7"
   _incus_labels "$name" "$agent" "$mode" "$image"
-  _incus_devices "$name" "$home" "$workspace" "$web_port"
+  _incus_devices "$name" "$home" "$web_port"
   _incus_env_set "$name" AGENT_WORKSPACE_AGENT "$agent"
   _incus_env_from_file "$name" "$env_file"
 }
 
-# eng_create_persistent NAME IMAGE VOLUME WORKSPACE ENV_FILE WEB_PORT AGENT
+# eng_create_persistent NAME IMAGE VOLUME ENV_FILE WEB_PORT AGENT
+#
+# No workspace disk device: an instance's own /home/agent is the workspace, and
+# the home device is the only host-side thing it mounts.
 eng_create_persistent() {
-  local name="$1" image="$2" volume="$3" workspace="$4" env_file="$5" web_port="$6" agent="$7"
+  local name="$1" image="$2" volume="$3" env_file="$4" web_port="$5" agent="$6"
   local home
   if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
     eng_image_exists "$image" || die_k err_incus_image_missing "$image"
@@ -416,25 +428,24 @@ eng_create_persistent() {
   fi
   home="$(_incus_home_dir "$volume")"
   run_engine init "$(_incus_alias "$image")" "$name"
-  _incus_instance_ready "$name" "$image" "$agent" persistent "$home" "$workspace" "$env_file" "$web_port"
+  _incus_instance_ready "$name" "$image" "$agent" persistent "$home" "$env_file" "$web_port"
   run_engine start "$name"
 }
 
-# eng_create_ephemeral NAME IMAGE WORKSPACE ENV_FILE AGENT COMMAND
+# eng_create_ephemeral NAME IMAGE ENV_FILE AGENT COMMAND
 #
 # The container CLIs pass COMMAND as the container's own argv (`run --rm`); with
 # an instance that has to boot first, the equivalent is: start it, run COMMAND
-# inside it with the agent's credentials, then delete the instance.
+# inside it with the agent's credentials, then delete the instance. No disk
+# device is added: a one-shot run writes nothing that is meant to outlive it.
 eng_create_ephemeral() {
-  local name="$1" image="$2" workspace="$3" env_file="$4" agent="$5" command="$6"
+  local name="$1" image="$2" env_file="$3" agent="$4" command="$5"
   local status=0
   if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
     eng_image_exists "$image" || die_k err_incus_image_missing "$image"
   fi
   run_engine init "$(_incus_alias "$image")" "$name"
   _incus_labels "$name" "$agent" ephemeral "$image"
-  run_engine config device add "$name" "$INCUS_WORKSPACE_DEVICE" disk \
-    source="$workspace" path=/workspace shift=true
   run_engine config set "$name" environment.HOME "/home/${agent}"
   _incus_env_set "$name" AGENT_WORKSPACE_AGENT "$agent"
   _incus_env_from_file "$name" "$env_file"
@@ -451,6 +462,15 @@ eng_create_ephemeral() {
 eng_exec() {
   local name="$1"; shift
   run_engine exec "$name" -- "$@"
+}
+
+# eng_exec_root NAME CMD...: an interactive root shell inside the instance, for
+# `rescue` when the agent account is locked or the configuration is broken.
+# Incus already runs `exec` as root unless --user says otherwise; spelling it
+# keeps the verb's contract identical across backends.
+eng_exec_root() {
+  local name="$1"; shift
+  run_engine exec "$name" --user root -- "$@"
 }
 
 eng_exec_test() {

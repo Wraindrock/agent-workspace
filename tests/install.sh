@@ -124,6 +124,9 @@ missing() { # missing LABEL PATH
 valid_tar() { # valid_tar LABEL ARCHIVE
   if tar -tzf "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1 (not a readable tarball)"; fi
 }
+glob_exists() { # glob_exists LABEL PATTERN
+  if compgen -G "$2" >/dev/null; then pass "$1"; else fail "$1 (no path matching $2)"; fi
+}
 
 RUN_OUT=""
 RUN_STATUS=0
@@ -137,6 +140,27 @@ run_installer() { # run_installer PATH [args...]
   RUN_STATUS=$?
 }
 run() { run_installer "$PATH" "$@"; }
+# run_in_dir runs the installer with a different working directory, for the
+# commands whose default output lands in $PWD (backup, rescue --copy).
+run_in_dir() { # run_in_dir DIR [args...]
+  local dir="$1"; shift
+  RUN_OUT="$(cd "$dir" && env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" \
+    bash "$INSTALLER" "$@" 2>&1 </dev/null)"
+  RUN_STATUS=$?
+}
+# run_bad_archive makes the engine write an archive that is present but not a
+# tarball: the negative control for "verify before keeping".
+run_bad_archive() {
+  RUN_OUT="$(env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+    FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+    WEB_PORT_BASE="$WEB_PORT_BASE" FAKE_ENGINE_BAD_ARCHIVE=1 \
+    bash "$INSTALLER" "$@" 2>&1 </dev/null)"
+  RUN_STATUS=$?
+}
 # run_with_tty runs the installer on a real pty (via `script`), so the interactive
 # chooser sees stdin as a terminal exactly as it would for a person; the second
 # argument is the line typed at the prompt. This is the one behaviour a pipe
@@ -355,7 +379,14 @@ is "the mode is recorded" persistent "$(meta_key box1 MODE)"
 is "the engine is recorded" podman "$(meta_key box1 ENGINE)"
 is "the volume is recorded" agent-workspace-box1-home "$(meta_key box1 VOLUME)"
 exists "the home volume exists" "$(volume_path box1)"
-exists "the workspace directory exists" "$WORKSPACE_ROOT/box1"
+missing "no host workspace directory is created" "$WORKSPACE_ROOT/box1"
+contains "the only mount is the engine-managed home volume" \
+  "--volume agent-workspace-box1-home:/home/agent" "$(engine_log)"
+is "persistent create has exactly one --volume" 1 \
+  "$(grep -F -- 'run --name box1' "$FAKE_ENGINE_STATE/log" | grep -o -- '--volume [^ ]*' | wc -l)"
+lacks "no host directory is bind-mounted" "$WORKSPACE_ROOT" "$(engine_log)"
+contains "the working directory is inside the instance" "--workdir /home/agent" "$(engine_log)"
+lacks "the old /workspace working directory is gone" "--workdir /workspace" "$(engine_log)"
 exists "the metadata file exists" "$(data)/containers/box1/meta"
 exists "the history file exists" "$(data)/containers/box1/meta.history"
 contains "the history records the creation" "created from" "$(cat "$(data)/containers/box1/meta.history" 2>/dev/null)"
@@ -379,6 +410,10 @@ echo "create (ephemeral)"
 run create --agent opencode --name once --mode ephemeral --yes
 is "create ephemeral exits 0" 0 "$RUN_STATUS"
 contains "ephemeral containers run with --rm" "fake ephemeral run" "$(engine_log)"
+lacks "ephemeral mounts no host directory" "$WORKSPACE_ROOT" "$(engine_log)"
+is "ephemeral create has no --volume" 0 \
+  "$(grep -F -- '--rm --name once' "$FAKE_ENGINE_STATE/log" | grep -o -- '--volume [^ ]*' | wc -l)"
+contains "ephemeral works inside the instance" "--workdir /home/agent" "$(engine_log)"
 is "ephemeral leaves no container behind" none "$(fake_state once)"
 is "the ephemeral mode is recorded" ephemeral "$(meta_key once MODE)"
 run enter once
@@ -1146,6 +1181,129 @@ contains "the root feature goes through the exec verbs" "eng_exec_test" "$root_r
 lacks "the root feature never names podman" "podman" "$root_region"
 lacks "the root feature never names docker" "docker" "$root_region"
 lacks "the root feature never names incus" "incus" "$root_region"
+# =========================================================================
+echo "backup / restore / rescue"
+
+run create --agent dsh --name bkp --yes
+is "the backup test instance is created" 0 "$RUN_STATUS"
+printf 'backup-sentinel\n' >"$(volume_path bkp)/sentinel.txt"
+mkdir -p "$WORK/backups"
+ARCHIVE="$WORK/backups/bkp.tar.gz"
+
+run backup bkp --to "$ARCHIVE"
+is "backup exits 0" 0 "$RUN_STATUS"
+exists "backup writes the archive" "$ARCHIVE"
+is "the backup archive is private" 600 "$(stat -c %a "$ARCHIVE")"
+valid_tar "the backup is a readable tarball" "$ARCHIVE"
+is "the manifest is the first archive member" "manifest.txt" "$(tar -tzf "$ARCHIVE" | head -n 1)"
+contains "the backup contains the home data" "home/sentinel.txt" "$(tar -tzf "$ARCHIVE")"
+contains "the manifest records the instance" "CONTAINER=bkp" "$(tar -xOf "$ARCHIVE" manifest.txt)"
+contains "the manifest names the data marker" "DATA=home" "$(tar -xOf "$ARCHIVE" manifest.txt)"
+contains "the backup reports its member count" "members" "$RUN_OUT"
+
+run backup bkp --to "$ARCHIVE"
+is "backup refuses to overwrite" 1 "$RUN_STATUS"
+contains "the overwrite refusal names the file" "$ARCHIVE" "$RUN_OUT"
+
+run backup bkp --to "$WORK/backups/dry.tar.gz" --dry-run
+is "backup --dry-run exits 0" 0 "$RUN_STATUS"
+contains "backup --dry-run prints the plan" "dry-run: would archive" "$RUN_OUT"
+missing "backup --dry-run writes nothing" "$WORK/backups/dry.tar.gz"
+
+mkdir -p "$WORK/cwd"
+run_in_dir "$WORK/cwd" backup bkp
+is "backup defaults to the current directory" 0 "$RUN_STATUS"
+glob_exists "the default name carries the container and a timestamp" \
+  "$WORK/cwd/agent-workspace-backup-bkp-*.tar.gz"
+
+run_bad_archive backup bkp --to "$WORK/backups/bad.tar.gz"
+is "a backup whose archive is unreadable fails" 1 "$RUN_STATUS"
+contains "the unreadable archive is explained" "no archive was kept" "$RUN_OUT"
+missing "no partial archive is left behind" "$WORK/backups/bad.tar.gz"
+
+# restore validates the source before it touches anything
+run restore bkp "$WORK/backups/nosuch.tar.gz"
+is "restore refuses a missing archive" 1 "$RUN_STATUS"
+contains "the missing archive is named" "nosuch.tar.gz" "$RUN_OUT"
+
+printf 'not a tarball\n' >"$WORK/backups/broken.tar.gz"
+run restore bkp "$WORK/backups/broken.tar.gz"
+is "restore refuses an unreadable archive" 1 "$RUN_STATUS"
+contains "the unreadable archive is explained" "not a readable tar.gz archive" "$RUN_OUT"
+
+mkdir -p "$WORK/notbackup/home"
+printf 'x\n' >"$WORK/notbackup/home/file"
+tar czf "$WORK/backups/nomanifest.tar.gz" -C "$WORK/notbackup" home
+run restore bkp "$WORK/backups/nomanifest.tar.gz"
+is "restore refuses an archive without a manifest" 1 "$RUN_STATUS"
+contains "the missing manifest is named" "missing manifest.txt" "$RUN_OUT"
+
+run restore bkp "$ARCHIVE"
+is "restore refuses a running instance" 1 "$RUN_STATUS"
+contains "the running refusal names the stop command" "install.sh stop bkp" "$RUN_OUT"
+
+run stop bkp
+is "the instance stops before restore" 0 "$RUN_STATUS"
+
+volumes_before="$(ls "$FAKE_ENGINE_STATE/volumes" | wc -l)"
+run restore bkp "$ARCHIVE" --dry-run
+is "restore --dry-run exits 0" 0 "$RUN_STATUS"
+contains "restore --dry-run prints the plan" "dry-run: would restore" "$RUN_OUT"
+is "restore --dry-run creates no volume" "$volumes_before" "$(ls "$FAKE_ENGINE_STATE/volumes" | wc -l)"
+is "restore --dry-run leaves the data alone" "backup-sentinel" "$(cat "$(volume_path bkp)/sentinel.txt")"
+
+printf 'changed-after-backup\n' >"$(volume_path bkp)/sentinel.txt"
+run restore bkp "$ARCHIVE"
+is "restore exits 0" 0 "$RUN_STATUS"
+contains "restore reports the safety snapshot" "safety snapshot:" "$RUN_OUT"
+glob_exists "the pre-restore clone exists" \
+  "$FAKE_ENGINE_STATE/volumes/agent-workspace-bkp-home-pre-restore-*"
+is "restore puts the archived data back" "backup-sentinel" "$(cat "$(volume_path bkp)/sentinel.txt")"
+contains "restore reports the volume" "agent-workspace-bkp-home" "$RUN_OUT"
+contains "restore reports a count" "entries" "$RUN_OUT"
+
+printf 'changed-again\n' >"$(volume_path bkp)/sentinel.txt"
+pre_before="$(ls -d "$FAKE_ENGINE_STATE"/volumes/agent-workspace-bkp-home-pre-restore-* 2>/dev/null | wc -l)"
+run restore bkp "$ARCHIVE" --skip-safety
+is "restore --skip-safety exits 0" 0 "$RUN_STATUS"
+contains "the skipped safety snapshot is stated" "skipping the pre-restore safety snapshot" "$RUN_OUT"
+is "restore --skip-safety makes no new clone" "$pre_before" \
+  "$(ls -d "$FAKE_ENGINE_STATE"/volumes/agent-workspace-bkp-home-pre-restore-* 2>/dev/null | wc -l)"
+is "the skipped restore still restores" "backup-sentinel" "$(cat "$(volume_path bkp)/sentinel.txt")"
+
+run create --agent dsh --name rsc --yes
+is "the rescue test instance is created" 0 "$RUN_STATUS"
+printf 'rescue-data\n' >"$(volume_path rsc)/take.txt"
+run rescue nosuch --copy take.txt
+is "rescue refuses an unknown instance" 1 "$RUN_STATUS"
+contains "the unknown instance is reported" "no container named" "$RUN_OUT"
+
+run stop rsc
+is "the rescue instance stops" 0 "$RUN_STATUS"
+run rescue rsc
+is "rescue without a terminal refuses an interactive shell" 1 "$RUN_STATUS"
+contains "the refusal points at --copy" "--copy PATH" "$RUN_OUT"
+is "rescue starts the stopped instance" running "$(fake_state rsc)"
+
+run rescue rsc --copy /etc/passwd
+is "rescue refuses a path outside the instance home" 1 "$RUN_STATUS"
+contains "the outside path is explained" "outside the instance home" "$RUN_OUT"
+
+mkdir -p "$WORK/rescued"
+run_in_dir "$WORK/rescued" rescue rsc --copy take.txt
+is "rescue --copy exits 0" 0 "$RUN_STATUS"
+exists "rescue copies the path out" "$WORK/rescued/take.txt"
+is "the copied file has the data" "rescue-data" "$(cat "$WORK/rescued/take.txt")"
+contains "rescue prints the host path" "$WORK/rescued/take.txt" "$RUN_OUT"
+
+run rescue rsc --dry-run
+is "rescue --dry-run exits 0" 0 "$RUN_STATUS"
+contains "rescue --dry-run prints the plan" "dry-run: would open a root rescue shell" "$RUN_OUT"
+
+run_with_tty "$PATH" "" rescue rsc
+is "rescue opens a root shell on a terminal" 0 "$RUN_STATUS"
+contains "the rescue shell is a root engine exec" \
+  "exec --interactive --tty --user root rsc /bin/bash --login" "$(engine_log)"
 
 echo "create (container that does not stay up)"
 # A container that exits on start used to be reported as created, which is how a

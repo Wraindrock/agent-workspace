@@ -42,8 +42,9 @@ curl -fsSL https://raw.githubusercontent.com/wraindrock/agent-workspace/main/ins
 
 The TUI asks which agent goes into the container, what to call it, whether it should be
 **persistent** (systemd, keeps its home volume across restarts) or **ephemeral** (run
-once, then gone), which host directory to mount at `/workspace`, and once for the
-credential that agent needs. Then it creates the container and tells you how to enter it.
+once, then gone), and once for the credential that agent needs. Then it creates the
+container and tells you how to enter it. All of the agent's data lives inside the
+instance's own storage - the installer does not share a host directory into it.
 That credential is written to a `0600` file under
 `~/.config/agent-workspace/containers/` and passed to the container as an `--env-file`,
 so it is never baked into the image; if you skip the question the container is still
@@ -96,13 +97,15 @@ covers building your own image and what is inside it; the container reference is
 The same image is still a fine plain sandbox for a single throwaway run:
 
 ~~~bash
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest dsh
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest dsh
 ~~~
 
-Run it rootless (`podman`, not `sudo podman`) so everything the agent writes into
-`/workspace` belongs to your user. The installer does that for you: a named volume
-holds `/home/agent` and your chosen host directory is mounted at `/workspace`.
+Run it rootless (`podman`, not `sudo podman`) so the throwaway container runs inside
+your own user namespace. Nothing from this host is mounted into it; anything you want
+to keep belongs in a named volume or must be copied out before the container exits.
+The installer makes that durable for you: a named volume holds `/home/agent` - the
+agent's working directory - and `backup`, `restore` and `rescue` move that data in and
+out without ever exposing a host folder to the agent.
 
 ### On a bootc-capable machine (advanced, optional)
 
@@ -126,16 +129,15 @@ agent-workspace doctor       # is the running system what the image promised?
 The default image ships two harnesses, DSH and OpenCode:
 
 ~~~bash
-# one agent, one OS, your code mounted at /workspace
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest dsh
+# one agent, one OS, with its data inside the container
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest dsh
 
 # the other bundled harness
-podman run --rm -it -v "$PWD:/workspace:z" --workdir /workspace \
-  ghcr.io/wraindrock/agent-workspace:latest opencode
+podman run --rm -it --workdir /root ghcr.io/wraindrock/agent-workspace:latest opencode
 
-# systemd is PID 1, so a detached container can be entered like a machine
-podman run -d --name agent-box -v "$PWD:/workspace:z" --systemd=always \
+# systemd is PID 1, so a detached container can be entered like a machine;
+# the named volume survives the container and holds everything in /home/agent
+podman run -d --name agent-box --volume agent-box-home:/home/agent --systemd=always \
   ghcr.io/wraindrock/agent-workspace:latest
 podman exec -it agent-box /bin/bash
 ~~~
@@ -256,7 +258,7 @@ every file the image owns in it.
 The installer is the interface - interactive, or one subcommand per action:
 
 ~~~bash
-./install.sh create --agent dsh --name dsh-box --workspace "$PWD"
+./install.sh create --agent dsh --name dsh-box
 ./install.sh list
 ./install.sh snapshot dsh-box --label before-refactor
 ./install.sh rollback dsh-box
@@ -267,8 +269,8 @@ The installer is the interface - interactive, or one subcommand per action:
 A whole set can be declared in a file and created non-interactively:
 
 ~~~
-# name       agent     lifecycle   workspace
-review-box   dsh       persistent  ~/work/review
+# name       agent     lifecycle
+review-box   dsh       persistent
 scratch      opencode  ephemeral
 ~~~
 
@@ -283,6 +285,47 @@ starts from the built-in `dsh`/`opencode` entries and merges the image's
 `agentCatalog` over them, so it follows the build while still offering the built-ins
 when the manifest cannot be read. Full reference:
 [docs/containers.md](docs/containers.md).
+
+## Where the data lives: backup, restore and rescue
+
+A persistent instance keeps the agent's whole working tree under `/home/agent`,
+inside engine-managed storage: a named volume for `podman`/`docker`, and the
+instance's own disk plus an installer-managed home directory for `incus`. No host
+directory is bind-mounted into the instance any more, so creating or entering a
+container never makes a folder on this host the agent's working directory. The
+installer's own state - credentials, the backend choice, metadata and snapshots -
+still lives on the host under `~/.config` and `~/.local/share`.
+
+Moving data in and out is explicit and verified:
+
+~~~bash
+./install.sh backup dsh-box                         # ./agent-workspace-backup-<name>-<UTC>.tar.gz
+./install.sh backup dsh-box --to /safe/dsh-box.tar.gz
+./install.sh restore dsh-box /safe/dsh-box.tar.gz   # refuses a running instance
+./install.sh rescue dsh-box                         # interactive root shell inside the instance
+./install.sh rescue dsh-box --copy notes.txt        # copy a path out to the current directory
+~~~
+
+`backup` archives `/home/agent` plus a root `manifest.txt` (instance, agent, mode,
+engine, image and digest, creation time, data markers). It refuses to overwrite an
+existing file, verifies the archive after writing (`manifest.txt` and the home data
+must be listable) and deletes a partial archive instead of leaving a green-looking
+failure; it prints the path and member count. `--dry-run` prints the plan and writes
+nothing.
+
+`restore` validates the source archive before touching anything, refuses to restore
+into a running instance (stop it first), and takes a safety snapshot of the current
+home volume named `<volume>-pre-restore-<UTC timestamp>` unless you pass
+`--skip-safety`. It prints how many entries the snapshot holds, restores the archive,
+then verifies the volume before reporting what it put back. `--dry-run` changes
+nothing.
+
+`rescue` is the way back in when the instance is stopped or its configuration is
+broken: it starts a stopped instance, then either opens an interactive root shell
+inside it (a terminal is required) or copies one file/directory out with
+`--copy PATH`. Run `./install.sh rescue NAME --copy data/` from the host directory
+where you want the copy to land; it prints the resulting host path. This is also the
+escape hatch when `./install.sh root NAME off` locked the agent account.
 
 ## Root inside the instance
 
@@ -519,10 +562,12 @@ sudo incus admin init --minimal            # default storage pool + incusbr0 bri
 
 An Incus workspace differs from a container in three ways worth knowing:
 
-- the agent's home is a **directory on this host** -
+- the agent's home is an installer-managed **directory on this host** -
   `~/.local/share/agent-workspace/incus/homes/<name>` - not a named volume, mounted
-  with `shift=true` so the agent user owns it inside the instance. `backup`, `fork`
-  and `rollback` copy files; there is no `podman commit` involved;
+  with `shift=true` so the agent user owns it inside the instance. It is the one
+  host-visible piece of instance data (the installer owns and validates it; it is
+  not a user-selected workspace folder). `backup`, `fork` and `rollback` copy files;
+  there is no `podman commit` involved;
 - the web UI is published by a `proxy` device bound to `127.0.0.1`, so the port stays
   loopback-only the same way it does with `--publish 127.0.0.1:...`;
 - the workspace is an **unprivileged instance**: its root is a sub-uid/sub-gid

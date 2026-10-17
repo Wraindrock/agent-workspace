@@ -166,7 +166,7 @@ echo "interface"
 # workspace's home - it is a host directory, not part of the instance - so the
 # backend must own the commit + home-archive path and must not define a native
 # snapshot verb that would quietly lose the agent's data.
-if run_backend 'declare -F eng_commit >/dev/null && declare -F eng_volume_archive >/dev/null && declare -F eng_volume_restore_archive >/dev/null && declare -F eng_volume_clone >/dev/null && ! declare -F eng_snapshot_create >/dev/null && ! declare -F eng_snapshot_restore >/dev/null' >/dev/null 2>&1; then
+if run_backend 'declare -F eng_commit >/dev/null && declare -F eng_volume_archive >/dev/null && declare -F eng_volume_restore_archive >/dev/null && declare -F eng_volume_clone >/dev/null && declare -F eng_volume_export_path >/dev/null && declare -F eng_exec_root >/dev/null && ! declare -F eng_snapshot_create >/dev/null && ! declare -F eng_snapshot_restore >/dev/null' >/dev/null 2>&1; then
   pass "snapshots go through commit + home archive, and no native-snapshot verb is defined"
 else
   fail "the incus backend does not define the commit + home-archive snapshot path"
@@ -297,13 +297,17 @@ cat >"$WORK/creds.env" <<'ENV'
 DEEPSEEK_API_KEY=sk-test-secret-value
 ENV
 : >"$FAKE_INCUS_LOG"
-run_backend 'eng_create_persistent box ghcr.io/x/agent:1 hom4 '"$WORK"'/ws "$WORK/creds.env" 3081 agent' >/dev/null \
+run_backend 'eng_create_persistent box ghcr.io/x/agent:1 hom4 "$WORK/creds.env" 3081 agent' >/dev/null \
   || fail "eng_create_persistent failed"
+if log_has "path=/workspace"; then
+  fail "create still attaches a workspace disk device"
+else
+  pass "create attaches no host workspace; the agent works inside the instance"
+fi
 for want in \
   "init aw-ghcr.io_x_agent_1 box" \
   "config set box user.io.github.wraindrock.agent-workspace 1" \
   "config device add box home disk source=$WORK/incus/homes/hom4 path=/home/agent shift=true" \
-  "config device add box workspace disk source=$WORK/ws path=/workspace shift=true" \
   "config device add box web proxy listen=tcp:127.0.0.1:3081 connect=tcp:127.0.0.1:3080" \
   "start box"; do
   if log_has "$want"; then
@@ -351,7 +355,7 @@ fi
 # instead of starting an agent that has no credentials.
 echo "credential verification"
 : >"$FAKE_INCUS_LOG"
-if FAKE_INCUS_DROP_STDIN=1 run_backend 'eng_create_persistent bad ghcr.io/x/agent:1 hom5 '"$WORK"'/ws "$WORK/creds.env" 3082 agent' >/dev/null 2>&1; then
+if FAKE_INCUS_DROP_STDIN=1 run_backend 'eng_create_persistent bad ghcr.io/x/agent:1 hom5 "$WORK/creds.env" 3082 agent' >/dev/null 2>&1; then
   fail "a daemon that drops the value still produced an instance"
 else
   if log_has "start bad"; then

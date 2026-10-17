@@ -70,6 +70,12 @@ eng_volume_create() { run_engine volume create "$1"; }
 eng_volume_remove() { run_engine volume rm --force "$1" || true; }
 eng_exec()          { local name="$1"; shift; run_engine exec --interactive --tty "$name" "$@"; }
 
+# eng_exec_root NAME CMD...: an interactive command as root inside the instance.
+# Used by `rescue` when the agent account itself is locked; the backend owns the
+# spelling (`--user root` here, `--user root` on incus) so commands.sh does not
+# hard-code one engine's flags.
+eng_exec_root()     { local name="$1"; shift; run_engine exec --interactive --tty --user root "$name" "$@"; }
+
 # eng_exec_test NAME CMD...: run it, keep the exit status, drop the output.
 eng_exec_test() {
   local name="$1"; shift
@@ -130,6 +136,18 @@ eng_volume_archive() {
     --volume "${dir}:/backup$(engine_mount_suffix)" "$image" czf /backup/home.tar.gz -C /data .
 }
 
+# eng_volume_export_path VOLUME REL OUTDIR IMAGE
+#
+# Copy one path (relative to the volume root) out to OUTDIR/rescue.tar.gz, so
+# `rescue --copy` reads a single file or directory instead of a whole home.
+eng_volume_export_path() {
+  local volume="$1" rel="$2" outdir="$3" image="$4"
+  run_engine run --rm --entrypoint /usr/bin/tar \
+    --volume "${volume}:/data:ro" \
+    --volume "${outdir}:/backup$(engine_mount_suffix)" \
+    "$image" czf /backup/rescue.tar.gz -C /data "$rel"
+}
+
 # eng_volume_restore_archive VOLUME ARCHIVE IMAGE
 eng_volume_restore_archive() {
   local volume="$1" archive="$2" image="$3" dir
@@ -149,13 +167,14 @@ eng_volume_clone() {
 
 # --- creation --------------------------------------------------------------
 
-# eng_create_persistent NAME IMAGE VOLUME WORKSPACE ENV_FILE WEB_PORT AGENT
+# eng_create_persistent NAME IMAGE VOLUME ENV_FILE WEB_PORT AGENT
 #
 # The long-lived workspace: systemd is PID 1, the agent's home is a named volume
-# (so rollback/recover/upgrade rebuild the container around it), the workspace is
-# a bind mount, and the web UI is published on the host loopback only.
+# (so rollback/recover/upgrade rebuild the container around it), and the web UI
+# is published on the host loopback only. No host directory is mounted: the
+# agent works in /home/agent, which is the volume itself.
 eng_create_persistent() {
-  local name="$1" image="$2" volume="$3" workspace="$4" env_file="$5" web_port="$6" agent="$7"
+  local name="$1" image="$2" volume="$3" env_file="$4" web_port="$5" agent="$6"
   local -a args=(run --name "$name" --hostname "$name")
   local flag
   while IFS= read -r flag; do args+=("$flag"); done < <(eng_run_flags)
@@ -163,8 +182,7 @@ eng_create_persistent() {
   args+=(--label "${LABEL_NS}.agent=${agent}")
   args+=(--label "${LABEL_NS}.mode=persistent")
   args+=(--volume "${volume}:/home/${AGENT_USER}")
-  args+=(--volume "${workspace}:/workspace$(engine_mount_suffix)")
-  args+=(--workdir /workspace)
+  args+=(--workdir "/home/${AGENT_USER}")
   args+=(--env "AGENT_WORKSPACE_AGENT=${agent}")
   [[ -f "$env_file" ]] && args+=(--env-file "$env_file")
   if [[ -n "$web_port" ]]; then
@@ -174,9 +192,13 @@ eng_create_persistent() {
   run_engine "${args[@]}"
 }
 
-# eng_create_ephemeral NAME IMAGE WORKSPACE ENV_FILE AGENT COMMAND
+# eng_create_ephemeral NAME IMAGE ENV_FILE AGENT COMMAND
+#
+# One-shot containers get no volume and no host directory: their working
+# directory is /home/agent inside the image. Nothing they write is meant to
+# outlive them, which is why there is no home volume to mount.
 eng_create_ephemeral() {
-  local name="$1" image="$2" workspace="$3" env_file="$4" agent="$5" command="$6"
+  local name="$1" image="$2" env_file="$3" agent="$4" command="$5"
   local -a args=(run --rm --name "$name" --hostname "$name")
   if [[ -t 0 ]] && [[ -t 1 ]]; then
     args+=(--interactive --tty)
@@ -184,8 +206,7 @@ eng_create_ephemeral() {
   args+=(--label "${LABEL_KEY}=${LABEL_VALUE}")
   args+=(--label "${LABEL_NS}.agent=${agent}")
   args+=(--label "${LABEL_NS}.mode=ephemeral")
-  args+=(--volume "${workspace}:/workspace$(engine_mount_suffix)")
-  args+=(--workdir /workspace)
+  args+=(--workdir "/home/${AGENT_USER}")
   args+=(--env "AGENT_WORKSPACE_AGENT=${agent}")
   [[ -f "$env_file" ]] && args+=(--env-file "$env_file")
   args+=("$image" "$command")

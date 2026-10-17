@@ -177,22 +177,43 @@ work without a consumer.
 ## Data lives inside the instance
 
 Nothing in a working instance is a host directory the user browses. All data —
-agent home, workspace, sessions — lives in the instance's own storage:
+agent home, working tree, sessions — lives in the instance's own storage:
 
-- containers: named volumes owned by the container engine, not a bind mount of a
-  host path;
-- VMs: the instance's own disks.
+- containers: one named volume owned by the container engine, mounted at
+  `/home/agent`; no bind mount of a host path, and `/workspace` is not created
+  from the host any more - the agent works in `/home/agent`;
+- incus instances: the instance's own disk, plus the installer-managed home
+  directory at `~/.local/share/agent-workspace/incus/homes/<name>`. That
+  directory is engine-attached storage the installer owns and validates, not a
+  user-selected workspace folder, but it is honest to say the host user can read
+  it;
+- the kvm backend is not implemented in this version.
 
 So a damaged environment can be thrown away without having ever held the user's
-data hostage, and the two backends have the same data model.
+data hostage, and every implemented backend has the same data model: the
+installer mounts only engine-managed storage.
 
-What replaces host sharing is **rescue**: `backup` writes a verified archive of
-an instance's data plus a manifest (image reference/digest, configuration),
-`restore` validates that archive before restoring, and `rescue` starts a
-throwaway instance with the volumes attached so data can be pulled out of an
-environment whose root filesystem no longer boots. Archives are verified after
-writing (listable, contains the required members) and the source is validated
-before restoring; both print counts, not just "done".
+Moving data is explicit, never implicit. `backup NAME [--to FILE]` archives the
+in-instance home plus a root `manifest.txt` (instance name, mode, agent, engine,
+image reference and digest when known, UTC creation time, required data markers).
+The archive is written to a `.partial` name, verified by listing it and asserting
+`manifest.txt` and the home data are members, then renamed; a failed check deletes
+the partial file and exits non-zero. It refuses to overwrite an existing file and
+prints the path with its member count.
+
+`restore NAME ARCHIVE [--skip-safety]` validates the source archive first (readable
+tarball, `manifest.txt`, home data), refuses a running instance and names the exact
+`./install.sh stop NAME` command, then clones the current home volume to
+`<volume>-pre-restore-<UTC timestamp>` unless `--skip-safety` is given, reporting
+the clone name and entry count. It restores through the backend helper, verifies
+the volume exists afterwards, and reports how many entries were restored.
+
+`rescue NAME [--copy PATH]` is for the locked-out case: a stopped instance is
+started first, then either an interactive root shell is opened inside it
+(`eng_exec_root`, requires a TTY) or one path is copied out to the current host
+directory through a temporary volume tar. It refuses an unknown instance and a
+path outside the instance home. `--dry-run` on all three prints the plan and
+writes nothing. Counts and the resulting paths are printed, not just "done".
 
 ## Incus: visible, not hidden, not selectable
 

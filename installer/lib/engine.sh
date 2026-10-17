@@ -26,7 +26,12 @@
 #   eng_remove                  delete the instance (and nothing else)
 #   eng_volume_create / eng_volume_remove
 #   eng_exec                    interactive shell command in the instance
+#   eng_exec_root               interactive root shell command (rescue)
 #   eng_exec_nofail             non-interactive command, status discarded
+#   eng_volume_archive          archive a home volume into DIR/home.tar.gz
+#   eng_volume_restore_archive  extract such an archive into a volume
+#   eng_volume_clone            copy one home volume into another
+#   eng_volume_export_path      copy one path out of a volume (rescue --copy)
 #   eng_logs                    the instance's console log
 #   eng_commit                  freeze a running instance into an image
 #

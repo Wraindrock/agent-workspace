@@ -191,7 +191,7 @@ create_container_from() {
   case "$mode" in
     persistent)
       eng_volume_exists "$volume" || eng_volume_create "$volume" >/dev/null
-      eng_create_persistent "$name" "$image_ref" "$volume" "$workspace" "$env_file" "$publish_port" "$agent"
+      eng_create_persistent "$name" "$image_ref" "$volume" "$env_file" "$publish_port" "$agent"
       if [[ "${DRY_RUN:-0}" -eq 0 ]]; then
         # Wait for the container to reach "running" instead of trusting that it
         # did: a container that exits on start (a dangling /home, an image whose
@@ -213,7 +213,7 @@ create_container_from() {
       if [[ -n "${WEB_HOST_PORT_REQUEST:-}" ]]; then
         warn_k warn_web_port_ephemeral
       fi
-      eng_create_ephemeral "$name" "$image_ref" "$workspace" "$env_file" "$agent" "$(agent_launch_command "$agent")"
+      eng_create_ephemeral "$name" "$image_ref" "$env_file" "$agent" "$(agent_launch_command "$agent")"
       ;;
     *)
       die_k err_unknown_mode "${mode}"
@@ -727,7 +727,7 @@ cmd_fork() {
   agent="${agent:-$(container_agent "$src")}"
   agent_known "$agent" || die_k err_unknown_agent "${agent}"
   mode="${mode:-$(container_mode "$src")}"
-  workspace="${workspace:-$(default_workspace "$new")}"
+  workspace="${workspace:-}"
 
   if [[ -n "$snap" ]]; then
     snap="$(resolve_snapshot "$src" "$snap")"
@@ -834,6 +834,285 @@ cmd_remove() {
   ok_k removed_named "${name}"
 }
 
+# --- backup, restore, rescue ----------------------------------------------
+#
+# Data lives inside the instance, so the only way to get it out (or back in) is
+# through the engine. Backup bundles the home volume with a manifest and proves
+# the archive readable before it keeps it; restore proves the source readable
+# and takes a safety clone before it overwrites anything; rescue is the door for
+# a locked-out account or a broken config. All three print counts, not "done".
+
+# archive_has_member MEMBERS MEMBER succeeds when MEMBER is one of the tar
+# members (exact, not a substring: `home` must not match `home.tar.gz`).
+archive_has_member() {
+  local members="$1" member="$2"
+  case $'\n'"${members}"$'\n' in
+    *$'\n'"${member}"$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+
+# archive_missing_members MEMBERS prints what a backup/restore archive lacks,
+# as a comma-separated list (empty means it has the required members). The home
+# data may be listed as `home/` by tar; accept the plain directory spelling too.
+archive_missing_members() {
+  local members="$1" missing=""
+  archive_has_member "$members" "manifest.txt" || missing="manifest.txt"
+  if ! archive_has_member "$members" "home" &&
+     ! archive_has_member "$members" "home/" &&
+     ! archive_has_member "$members" "./home" &&
+     ! archive_has_member "$members" "./home/"; then
+    missing="${missing:+${missing}, }home/"
+  fi
+  printf '%s' "$missing"
+}
+
+archive_member_count() {
+  local archive="$1" members=""
+  members="$(tar -tzf "$archive" 2>/dev/null || true)"
+  if [[ -z "$members" ]]; then
+    printf '0'
+    return 0
+  fi
+  printf '%s\n' "$members" | wc -l | tr -d ' '
+}
+
+# cmd_backup NAME [--to FILE]: archive the instance's home storage plus a
+# manifest. The destination is never overwritten, and the archive is verified
+# before it is moved into place: a partial file that looks like a backup is
+# worse than a clear failure.
+cmd_backup() {
+  local name="${1}" to="${2:-}" volume image dest stage members missing count digest
+  require_container "$name"
+  state_engine "$name"
+  volume="$(container_home_volume "$name")"
+  image="$(container_run_image "$name")"
+  dest="${to:-agent-workspace-backup-${name}-$(date -u +%Y%m%d-%H%M%S).tar.gz}"
+  if [[ -e "$dest" ]]; then
+    die_k backup_exists "$dest"
+  fi
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    msg_k dry_backup "$name" "$dest"
+    msg_k dry_backup_members
+    return 0
+  fi
+
+  stage="$(mktemp -d)"
+  install -d -m 0700 "$stage/raw" "$stage/root/home"
+  if ! eng_volume_exists "$volume"; then
+    rm -rf "$stage"
+    die_k backup_missing_volume "$volume" "$name"
+  fi
+  if ! eng_volume_archive "$volume" "$stage/raw" "$image"; then
+    rm -rf "$stage"
+    die_k backup_unreadable "$volume"
+  fi
+  if ! home_archive_ok "$stage/raw/home.tar.gz"; then
+    rm -rf "$stage"
+    die_k backup_unreadable "$volume"
+  fi
+  if ! tar xzf "$stage/raw/home.tar.gz" -C "$stage/root/home" 2>/dev/null; then
+    rm -rf "$stage"
+    die_k backup_unreadable "$volume"
+  fi
+
+  digest="$(eng_image_id "$image" 2>/dev/null || true)"
+  {
+    printf 'FORMAT=1\n'
+    printf 'CONTAINER=%s\n' "$name"
+    printf 'AGENT=%s\n' "$(container_agent "$name")"
+    printf 'MODE=%s\n' "$(container_mode "$name")"
+    printf 'ENGINE=%s\n' "$ENGINE"
+    printf 'IMAGE=%s\n' "$(state_get "$name" IMAGE)"
+    printf 'RUN_IMAGE=%s\n' "$image"
+    printf 'DIGEST=%s\n' "${digest:-unknown}"
+    printf 'CREATED=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'DATA=home\n'
+    printf 'MEMBERS=manifest.txt home\n'
+  } >"$stage/root/manifest.txt"
+  chmod 0600 "$stage/root/manifest.txt"
+
+  if ! (umask 077; tar czf "${dest}.partial" -C "$stage/root" manifest.txt home 2>/dev/null); then
+    rm -f "${dest}.partial"
+    rm -rf "$stage"
+    die_k backup_unreadable "$dest"
+  fi
+  members="$(tar -tzf "${dest}.partial" 2>/dev/null || true)"
+  missing="$(archive_missing_members "$members")"
+  if [[ -n "$missing" ]]; then
+    rm -f "${dest}.partial"
+    rm -rf "$stage"
+    die_k backup_unverified "${dest}.partial" "$missing"
+  fi
+  if [[ -e "$dest" ]]; then
+    rm -f "${dest}.partial"
+    rm -rf "$stage"
+    die_k backup_exists "$dest"
+  fi
+  mv "${dest}.partial" "$dest"
+  chmod 0600 "$dest" 2>/dev/null || true
+  count="$(archive_member_count "$dest")"
+  rm -rf "$stage"
+  ok_k backup_written "$dest" "$count"
+}
+
+# cmd_restore NAME ARCHIVE: validate first, never overwrite a running instance,
+# and clone the current volume before replacing it (unless --skip-safety).
+cmd_restore() {
+  local name="${1}" archive="${2}" volume image pre members missing count stamp bump target safety_count
+  require_container "$name"
+  state_engine "$name"
+  volume="$(container_home_volume "$name")"
+  image="$(container_run_image "$name")"
+
+  if [[ ! -f "$archive" ]]; then
+    die_k restore_missing_file "$archive"
+  fi
+  if ! tar -tzf "$archive" >/dev/null 2>&1; then
+    die_k restore_unreadable "$archive"
+  fi
+  members="$(tar -tzf "$archive" 2>/dev/null || true)"
+  missing="$(archive_missing_members "$members")"
+  if [[ -n "$missing" ]]; then
+    die_k restore_bad_archive "$archive" "$missing"
+  fi
+  if eng_container_running "$name"; then
+    die_k restore_running "$name" "$name"
+  fi
+
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    msg_k dry_restore "$name" "$archive"
+    if [[ "${SKIP_SAFETY:-0}" -eq 1 ]]; then
+      msg_k dry_restore_skip
+    else
+      msg_k dry_restore_clone
+    fi
+    return 0
+  fi
+
+  target="$(mktemp -d)"
+  tar xzf "$archive" -C "$target" manifest.txt home 2>/dev/null
+  if [[ ! -d "$target/home" ]]; then
+    rm -rf "$target"
+    die_k restore_bad_archive "$archive" "home/"
+  fi
+  if ! tar czf "$target/home.tar.gz" -C "$target/home" . 2>/dev/null; then
+    rm -rf "$target"
+    die_k restore_bad_archive "$archive" "home/"
+  fi
+  if ! home_archive_ok "$target/home.tar.gz"; then
+    rm -rf "$target"
+    die_k restore_bad_archive "$archive" "home/"
+  fi
+  count="$(tar -tzf "$target/home.tar.gz" 2>/dev/null | wc -l || true)"
+  count="$((count + 0))"
+
+  if [[ "${SKIP_SAFETY:-0}" -eq 1 ]]; then
+    warn_k restore_safety_skipped "$name"
+  else
+    stamp="$(date -u +%Y%m%d-%H%M%S)"
+    pre="$(volume_name "$name")-pre-restore-${stamp}"
+    bump=1
+    while eng_volume_exists "$pre"; do
+      pre="$(volume_name "$name")-pre-restore-${stamp}-${bump}"
+      bump=$((bump + 1))
+    done
+    if ! eng_volume_clone "$volume" "$pre" "$image"; then
+      rm -rf "$target"
+      die_k restore_safety_failed "$pre"
+    fi
+    safety_count="0"
+    install -d -m 0700 "$target/safety"
+    if eng_volume_archive "$pre" "$target/safety" "$image" 2>/dev/null; then
+      safety_count="$(archive_member_count "$target/safety/home.tar.gz")"
+    fi
+    rm -rf "$target/safety"
+    ok_k restore_safety "$pre" "$safety_count"
+  fi
+
+  if ! eng_volume_restore_archive "$volume" "$target/home.tar.gz" "$image"; then
+    rm -rf "$target"
+    die_k restore_failed "$volume"
+  fi
+  rm -rf "$target"
+  if ! eng_volume_exists "$volume"; then
+    die_k restore_verify_failed "$volume"
+  fi
+  ok_k restore_done "$volume" "$count"
+}
+
+# cmd_rescue NAME [--copy PATH]: get back in or get data out. Starting a stopped
+# instance is part of the job (that is what "locked out" looks like), but the
+# command never changes the instance's configuration.
+cmd_rescue() {
+  local name="${1}" rel="" volume image stage target waited=0 timeout=30
+  require_container "$name"
+  state_engine "$name"
+  volume="$(container_home_volume "$name")"
+  image="$(container_run_image "$name")"
+
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    msg_k dry_rescue "$name" "${OPT_COPY:-}"
+    return 0
+  fi
+
+  if ! eng_container_running "$name"; then
+    msg_k rescue_starting "$name"
+    eng_start "$name" >/dev/null 2>&1 || true
+    timeout="${CONTAINER_READY_TIMEOUT:-30}"
+    until eng_container_running "$name"; do
+      if [[ "$waited" -ge "$timeout" ]]; then
+        die_k rescue_start_failed "$name"
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+    msg_k rescue_started "$name"
+  fi
+
+  if [[ -z "${OPT_COPY:-}" ]]; then
+    if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
+      die_k rescue_no_tty
+    fi
+    msg_k rescue_shell "$name"
+    eng_exec_root "$name" /bin/bash --login
+    return 0
+  fi
+
+  rel="${OPT_COPY}"
+  if [[ "$rel" == "/home/${AGENT_USER}/"* ]]; then
+    rel="${rel#"/home/${AGENT_USER}/"}"
+  fi
+  if [[ -z "$rel" ]] || [[ "$rel" == /* ]]; then
+    die_k rescue_outside "${OPT_COPY}"
+  fi
+  case "/${rel}/" in
+    *"/../"*|*"/./"*) die_k rescue_outside "${OPT_COPY}" ;;
+  esac
+  if ! eng_exec_test "$name" test -e "/home/${AGENT_USER}/${rel}"; then
+    die_k rescue_copy_missing "$name" "/home/${AGENT_USER}/${rel}"
+  fi
+
+  stage="$(mktemp -d)"
+  if ! eng_volume_export_path "$volume" "$rel" "$stage" "$image"; then
+    rm -rf "$stage"
+    die_k rescue_copy_failed "${OPT_COPY}"
+  fi
+  if [[ ! -s "$stage/rescue.tar.gz" ]] || ! tar -tzf "$stage/rescue.tar.gz" >/dev/null 2>&1; then
+    rm -rf "$stage"
+    die_k rescue_copy_failed "${OPT_COPY}"
+  fi
+  if ! tar xzf "$stage/rescue.tar.gz" -C "$PWD" 2>/dev/null; then
+    rm -rf "$stage"
+    die_k rescue_copy_failed "${OPT_COPY}"
+  fi
+  rm -rf "$stage"
+  target="${PWD}/${rel}"
+  if [[ ! -e "$target" ]]; then
+    die_k rescue_copy_failed "${OPT_COPY}"
+  fi
+  ok_k rescue_copied "$target"
+}
 # --- host doctor -----------------------------------------------------------
 
 cmd_doctor() {

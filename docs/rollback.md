@@ -76,7 +76,7 @@ volume and its own credentials file:
 ./install.sh fork dsh-box dsh-experiment
 ./install.sh fork dsh-box dsh-old --from 20260113T090000Z   # from a specific snapshot
 ./install.sh fork dsh-box dsh-live --live                   # copy the live volume, no snapshot
-./install.sh fork dsh-box dsh-alt --agent opencode --workspace ~/work/alt
+./install.sh fork dsh-box dsh-alt --agent opencode
 ~~~
 
 By default the source is snapshotted first (`fork-source`), and the new container's
@@ -93,7 +93,7 @@ copied so the fork is immediately usable, with a warning to review the new file.
 ~~~
 
 It takes a `pre-upgrade` snapshot first, then recreates the container from the new
-image with the same name, agent, mode and workspace, and reuses the home volume. If
+image with the same name, agent and mode, and reuses the home volume. If
 the new image misbehaves:
 
 ~~~bash
@@ -121,8 +121,10 @@ snapshot can silently restore a half-written home directory.
 
 ## What snapshots do not cover
 
-- **The host workspace.** `/workspace` is a bind mount of a directory on your host;
-  it is your data, and it is not part of a snapshot. Version it with git.
+- **Anything outside `/home/agent`.** The agent's working tree lives in its home
+  volume, so snapshots do cover it; data deliberately kept elsewhere (a host path you
+  copy to, or files you leave in the container layer) is not in the archive. Use
+  `./install.sh backup` for an off-host, verified copy before destructive repairs.
 - **Credentials.** They stay in `~/.config/agent-workspace/containers/<name>.env` and
   are deliberately kept out of the container filesystem and out of snapshots.
 - **Other hosts.** Snapshots are local images plus a local archive. To move a

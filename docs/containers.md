@@ -97,8 +97,9 @@ Quit
 ```
 
 The create flow asks for the agent, the container name, the lifecycle (persistent or
-ephemeral), the host workspace directory, and the credential the agent needs. Pass
-`--no-tui` to refuse to prompt, which is what scripts and CI want.
+ephemeral), and the credential the agent needs. It does not ask for a host directory:
+all of the agent's data lives inside the instance's storage. Pass `--no-tui` to
+refuse to prompt, which is what scripts and CI want.
 
 ## Lifecycles
 
@@ -170,9 +171,12 @@ connection.
 Every TUI action has a subcommand:
 
 ~~~bash
-./install.sh create --agent dsh --name dsh-box --workspace "$PWD"   # one container
+./install.sh create --agent dsh --name dsh-box                      # one container
 ./install.sh create --agent opencode --name box --count 2           # box-1, box-2
 ./install.sh list                                                   # what this host has
+./install.sh backup dsh-box --to /safe/dsh-box.tar.gz               # verified archive + manifest
+./install.sh restore dsh-box /safe/dsh-box.tar.gz                   # instance must be stopped
+./install.sh rescue dsh-box                                         # root shell; --copy PATH to get data out
 ./install.sh snapshot dsh-box --label before-refactor --keep 10
 ./install.sh snapshots dsh-box
 ./install.sh rollback dsh-box --to 20260113T090000Z
@@ -195,8 +199,8 @@ Global options: `--backend NAME` (`--engine` is an alias), `--image REF`, `--no-
 A set of containers can be written down, which makes it reproducible on another host:
 
 ```
-# name       agent     lifecycle   workspace
-review-box   dsh       persistent  ~/work/review
+# name       agent     lifecycle
+review-box   dsh       persistent
 scratch      opencode  ephemeral
 ```
 
@@ -207,7 +211,9 @@ scratch      opencode  ephemeral
 ```
 
 Lines are `name agent [mode] [workspace]`; blank lines and `#` comments are ignored,
-and `mode`/`workspace` fall back to `persistent` and `~/agent-workspace/<name>`.
+and `mode` falls back to `persistent`. The optional `workspace` column is accepted
+for compatibility and recorded, but it is never mounted: instance data lives inside
+the instance, not in a host folder.
 Use `--file -` to read the declaration from stdin, and `--save FILE` to write back
 what you created (the TUI offers the same thing when you create several containers).
 
@@ -243,7 +249,7 @@ and rotates the password inside the instance. See "Root inside the instance" in 
 | --- | --- |
 | `~/.config/agent-workspace/containers/<name>.env` | the container's credentials, mode 600 |
 | `~/.config/agent-workspace/credentials/<name>.root` | the agent's password while in-instance root is on, mode 600 |
-| `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, workspace, volume, image, web port, timestamps |
+| `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, recorded workspace (compatibility only), volume, image, web port, timestamps |
 | `~/.local/share/agent-workspace/containers/<name>/meta.history` | one line per lifecycle event |
 | `~/.local/share/agent-workspace/snapshots/<name>/<id>/` | `meta` plus `home.tar.gz` (see [rollback.md](rollback.md)) |
 
@@ -252,6 +258,14 @@ work from the host state directory, not from the engine. Containers created here
 also carry the label `agent-workspace.manager=install.sh`, which engine-side
 checks use to recognise them - for example when deciding whether a snapshot
 image is still in use.
+
+That table is the whole host-side surface. The agent's data is **not** there and
+not in a bind-mounted folder: for `podman`/`docker` it is a named volume owned by
+the engine, and for `incus` it is the instance disk plus the installer-managed
+`~/.local/share/agent-workspace/incus/homes/<name>` directory. The engine volume is
+still readable by your host user (rootless engines run as you), so it protects
+against a damaged instance, not against the host user. Move it in and out with
+`backup`, `restore` and `rescue`; see [Where the data lives](../README.md#where-the-data-lives-backup-restore-and-rescue).
 
 ## Doctor
 
@@ -296,8 +310,9 @@ backend`, `install.sh list` and `install.sh doctor` still list it.
 | | podman / docker | incus |
 | --- | --- | --- |
 | what the workspace is | container in your rootless podman / docker | unprivileged Incus instance (daemon-owned) |
-| agent home | named volume | host directory `~/.local/share/agent-workspace/incus/homes/<name>` |
-| project directory | bind mount with `:z` | `disk` device with `shift=true` |
+| agent home | named volume mounted at `/home/agent` | installer-managed host directory `~/.local/share/agent-workspace/incus/homes/<name>` mounted at `/home/agent` |
+| agent working directory | `/home/agent` inside that volume | `/home/agent` inside the instance |
+| host workspace | none: no host path is mounted | none: no user host directory is attached |
 | web UI | `--publish 127.0.0.1:<port>:3080` | `proxy` device on `127.0.0.1` |
 | image | `pull` (and `commit` for a snapshot image) | `podman export` piped through `xz` into `incus image import`, cached by image ID |
 | fork / rollback | volume archives | `incus copy` plus home copies |
@@ -462,23 +477,67 @@ random value that is written nowhere, then locks the account (`passwd -l`), so
 nothing the agent could have read while root was on still authenticates. The old
 password is not backed up; the host file is deleted as part of the same step.
 
-Workaround: set a password you know from inside the instance, where the
-installer's exec path is still root:
+Workaround, first choice: `rescue` opens a root shell inside the instance without
+depending on the agent account, even when the configuration is broken enough that
+`enter` cannot start the agent:
 
 ~~~bash
-./install.sh enter dsh-box
-passwd agent          # sets a new password and clears the lock
+./install.sh rescue dsh-box              # starts it if stopped, then root shell
+passwd agent                             # sets a new password and clears the lock
 ~~~
 
-Turning the switch back on (`./install.sh root dsh-box on`) also restores a
-password login: it sets a fresh random password and writes it to the host file
-again. If you want to keep a working login across `off`, copy the password out of
-`~/.config/agent-workspace/credentials/<name>.root` first (mode 600, and the only
-copy).
+If there is no terminal (scripts, CI), use the non-interactive escape: copy the
+data out first, then rebuild or repair at leisure.
 
-Escape hatch: none is needed to reach the agent itself - `enter` and `shell` run
-as root inside, and `sudo -u agent -i` gives you a shell as the agent without any
-password.
+~~~bash
+./install.sh rescue dsh-box --copy data/   # copy one directory out to the current directory
+~~~
+
+`./install.sh enter dsh-box` is the lighter alternative when the container still
+starts normally. Turning the switch back on (`./install.sh root dsh-box on`) also
+restores a password login: it sets a fresh random password and writes it to the
+host file again. If you want to keep a working login across `off`, copy the
+password out of `~/.config/agent-workspace/credentials/<name>.root` first (mode
+600, and the only copy).
+
+Escape hatch: none is needed to reach the agent itself - `enter`, `shell` and
+`rescue` run as root inside, and `sudo -u agent -i` gives you a shell as the
+agent without any password.
+
+### Disk full or a corrupted instance
+
+Symptom: commands inside the instance fail with `No space left on device`,
+`Read-only file system`, `failed to mount ...: Structure needs cleaning`, or the
+container exits before systemd reaches a prompt and `./install.sh enter` reports
+that the container did not stay up.
+
+Root cause: the engine-managed volume or the instance disk filled up, or its
+filesystem was damaged by a hard stop / host crash. The installer cannot repair
+that in place, and it must not delete data to "fix" it.
+
+Workaround, in this order - **take a backup before attempting any repair**:
+
+~~~bash
+./install.sh stop dsh-box
+./install.sh backup dsh-box --to /safe/dsh-box-before-repair.tar.gz
+./install.sh doctor dsh-box              # read-only diagnosis
+~~~
+
+`backup` verifies the archive it writes and refuses to overwrite; if the
+filesystem is so damaged that the archive cannot be read, it deletes the partial
+file and exits non-zero, which is the signal that the data is not salvageable this
+way. Then create a fresh instance and restore into it, or use `rescue --copy` to
+pull individual paths out before removing anything:
+
+~~~bash
+./install.sh restore dsh-box /safe/dsh-box-before-repair.tar.gz
+./install.sh rescue dsh-box --copy data/      # per-path extraction, no restore
+~~~
+
+Escape hatch: never run `engine volume rm` on a volume that still holds data you
+might want; copy it to another engine volume or a host directory you control
+first. Archives and volume names are printed by the commands above, and backups
+are plain `tar.gz` files you can inspect with `tar tzf` before trusting them.
 
 ### Distrobox and toolbox
 

@@ -96,6 +96,27 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
   `tests/install.sh` asserts the UI starts at create, comes back after `stop`/`start`
   and `restart`, that a pending first boot is reported, and that an agent without a web
   UI gets no published port.
+- `./install.sh backup NAME [--to FILE]` archives the instance's in-instance home plus a
+  root `manifest.txt` (instance, mode, agent, engine, image reference and digest,
+  UTC creation time, data markers). The default destination is
+  `./agent-workspace-backup-<name>-<UTC%Y%m%d-%H%M%S>.tar.gz`; an existing file is
+  never overwritten. The archive is verified after writing (listable, contains
+  `manifest.txt` and the home data); a failed check deletes the partial archive and
+  exits non-zero, and success prints the path and member count. `--dry-run` writes
+  nothing.
+- `./install.sh restore NAME ARCHIVE [--skip-safety]` validates the archive before
+  touching anything, refuses a running instance and names the `stop` command, clones
+  the current home volume to `<volume>-pre-restore-<UTC timestamp>` as a safety
+  snapshot (reported with its entry count) unless `--skip-safety`, restores through
+  the backend helper, and verifies the volume afterwards. `--dry-run` changes nothing.
+- `./install.sh rescue NAME [--copy PATH]` is the locked-out path: it starts a stopped
+  instance, then opens an interactive root shell inside it (TTY required) or copies
+  one file/directory out to the current host directory and prints the resulting path.
+  It refuses an unknown instance and paths outside the instance home.
+- `eng_exec_root` and `eng_volume_export_path` join the backend verb set; all three
+  implemented backends (podman, docker, incus) provide them. `tests/install.sh` drives
+  backup/restore/rescue behaviour, and `tests/incus.sh` asserts the incus verbs and
+  that create attaches no host workspace.
 
 ### Changed
 
@@ -128,6 +149,16 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 - `install.sh --help` documents `--backend`/`--engine` as one entry and gains
   `./install.sh backend [set NAME]`. `--help` output is unchanged in structure, so
   the language test's surface comparison still holds.
+- Instance data is no longer a host folder shared into the container. Every host-path
+  bind (`--workspace`) is gone from `eng_create_persistent` and `eng_create_ephemeral`
+  on podman, docker and incus; the only mount is the engine-managed home storage
+  (named volume for podman/docker, instance disk plus installer-managed home directory
+  for incus). `create`/`run` work in `/home/agent` inside the instance. The `WORKSPACE`
+  state field and `--workspace` flag are kept for compatibility (declarative files and
+  `fork`) but are recorded, not acted on; no host directory is created. Credentials,
+  backend choice, metadata and snapshots stay on the host under `~/.config` and
+  `~/.local/share`. Tests assert the recorded argv has only the engine-managed volume
+  and no `/workspace` workdir.
 
 ### Fixed
 

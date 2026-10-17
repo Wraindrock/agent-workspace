@@ -283,6 +283,38 @@ t() {
         snap_archive_bad2)    value="快照 %s 的 home 归档无法读取（%s）；没有任何改动" ;;
         snap_image_gone)      value="快照镜像 %s 已不存在；快照 %s 无法还原" ;;
         home_restored)        value="已从快照 %s 还原 home 卷（%s 个条目）" ;;
+        # --- backup, restore, rescue ---------------------------------------
+        dry_backup)           value="dry-run：将把容器 %s 归档到 %s" ;;
+        dry_backup_members)   value="归档会包含 manifest.txt 和完整的 home 目录，写完后再列一遍校验" ;;
+        backup_exists)        value="拒绝覆盖 %s：请删除它，或换一个 --to 路径" ;;
+        backup_missing_volume) value="容器 %s 没有 home 卷 %s：没有可备份的数据" ;;
+        backup_unreadable)    value="无法读取 %s 的实例内数据；没有保留任何归档" ;;
+        backup_unverified)    value="归档 %s 缺少 %s；已删除它，不保留损坏的备份" ;;
+        backup_written)       value="已写出备份 %s（%s 个成员，包含并校验了 manifest）" ;;
+        restore_missing_file) value="找不到归档文件 %s" ;;
+        restore_unreadable)   value="%s 不是可读的 tar.gz 归档" ;;
+        restore_bad_archive)  value="%s 不是本安装器的备份：缺少 %s" ;;
+        restore_running)      value="拒绝还原到运行中的容器 %s：请先执行 ./install.sh stop %s" ;;
+        dry_restore)          value="dry-run：将把 %s 还原到容器 %s" ;;
+        dry_restore_skip)     value="会跳过还原前安全快照（--skip-safety）" ;;
+        dry_restore_clone)    value="覆盖之前会先克隆当前的 home 卷" ;;
+        restore_safety_failed) value="无法把当前 home 卷克隆到 %s；没有覆盖任何数据" ;;
+        restore_safety)       value="安全快照：已把当前 home 卷克隆到 %s（%s 个条目）" ;;
+        restore_safety_skipped) value="跳过还原前安全快照（--skip-safety）：当前 home 卷将被覆盖且没有副本" ;;
+        restore_failed)       value="无法还原 home 卷 %s" ;;
+        restore_verify_failed) value="还原后 home 卷 %s 不存在" ;;
+        restore_done)         value="已还原 %s 个条目到 home 卷 %s；实例下次启动即可使用" ;;
+        dry_rescue)           value="dry-run：将在 %s 里打开 root 救援 shell（或把 %s 复制出来）" ;;
+        rescue_starting)      value="%s 处于停止状态；正在启动它以进行救援" ;;
+        rescue_started)       value="%s 已在运行；没有改动任何配置" ;;
+        rescue_start_failed)  value="%s 没有启动；无法打开救援 shell" ;;
+        rescue_no_tty)        value="没有终端可用于交互式 root shell：请在终端里运行，或用 --copy PATH 把数据复制出来" ;;
+        rescue_shell)         value="正在 %s 里打开 root shell；用完退出即可" ;;
+        rescue_outside)       value="%s 不在实例 home 内：只能复制 /home/agent 下的路径" ;;
+        rescue_copy_missing)  value="%s 里没有 %s" ;;
+        rescue_copy_failed)   value="无法把 %s 从实例里复制出来" ;;
+        rescue_copied)        value="已复制到 %s" ;;
+        err_restore_args)     value="restore 需要容器名和归档路径" ;;
         # --- fork: copying the home volume ---------------------------------
         forking_copy_snap)    value="正在从快照 %s 复制 home 卷" ;;
         forking_copy_live)    value="正在复制使用中的 home 卷 %s" ;;
@@ -560,6 +592,38 @@ t() {
         snap_archive_bad2)    value="the home archive of snapshot %s is unreadable (%s); nothing was changed" ;;
         snap_image_gone)      value="snapshot image %s is gone; snapshot %s cannot be restored" ;;
         home_restored)        value="restored the home volume from snapshot %s (%s entries)" ;;
+        # --- backup, restore, rescue ---------------------------------------
+        dry_backup)           value="dry-run: would archive the home storage of container %s into %s" ;;
+        dry_backup_members)   value="the archive would contain manifest.txt and the complete home directory, then be verified by listing it back" ;;
+        backup_exists)        value="refusing to overwrite %s: remove it or choose another --to path" ;;
+        backup_missing_volume) value="container %s has no home volume %s: there is nothing to back up" ;;
+        backup_unreadable)    value="could not read the in-instance home storage of %s; no archive was kept" ;;
+        backup_unverified)    value="the archive %s is missing %s; deleted it instead of keeping a broken backup" ;;
+        backup_written)       value="wrote backup %s (%s members, manifest included and verified)" ;;
+        restore_missing_file) value="no archive file at %s" ;;
+        restore_unreadable)   value="%s is not a readable tar.gz archive" ;;
+        restore_bad_archive)  value="%s is not an agent-workspace backup: missing %s" ;;
+        restore_running)      value="refusing to restore into running container %s: stop it first with ./install.sh stop %s" ;;
+        dry_restore)          value="dry-run: would restore %s into container %s" ;;
+        dry_restore_skip)     value="the pre-restore safety snapshot would be skipped (--skip-safety)" ;;
+        dry_restore_clone)    value="the current home volume would be cloned before anything is overwritten" ;;
+        restore_safety_failed) value="could not clone the current home volume to %s; nothing was overwritten" ;;
+        restore_safety)       value="safety snapshot: cloned the current home volume to %s (%s entries)" ;;
+        restore_safety_skipped) value="skipping the pre-restore safety snapshot (--skip-safety): the current home volume will be overwritten with no copy" ;;
+        restore_failed)       value="could not restore the home volume %s" ;;
+        restore_verify_failed) value="the home volume %s is missing after the restore" ;;
+        restore_done)         value="restored %s entries into home volume %s; the instance's home is ready for the next start" ;;
+        dry_rescue)           value="dry-run: would open a root rescue shell in %s (or copy %s out)" ;;
+        rescue_starting)      value="%s is stopped; starting it for rescue" ;;
+        rescue_started)       value="%s is running; no configuration was changed" ;;
+        rescue_start_failed)  value="%s did not start; cannot open a rescue shell" ;;
+        rescue_no_tty)        value="no terminal for an interactive root shell: run this from a terminal, or use --copy PATH to copy data out" ;;
+        rescue_shell)         value="opening a root shell in %s; exit it when you are done" ;;
+        rescue_outside)       value="%s is outside the instance home: only paths under /home/agent can be copied" ;;
+        rescue_copy_missing)  value="%s has no %s" ;;
+        rescue_copy_failed)   value="could not copy %s out of the instance" ;;
+        rescue_copied)        value="copied it to %s" ;;
+        err_restore_args)     value="restore needs a container name and an archive path" ;;
         # --- fork: copying the home volume ---------------------------------
         forking_copy_snap)    value="copying the home volume from snapshot %s" ;;
         forking_copy_live)    value="copying the live home volume %s" ;;
@@ -683,6 +747,12 @@ agent-workspace installer（安装器）
   ./install.sh rollback NAME [--to ID]
                                用一个快照替换当前容器
   ./install.sh recover NAME    重建丢失或已停止的容器
+  ./install.sh backup NAME [--to FILE]
+                               把实例内的数据归档成带 manifest 的校验备份
+  ./install.sh restore NAME ARCHIVE [--skip-safety]
+                               校验归档后还原进实例（先做安全快照）
+  ./install.sh rescue NAME [--copy PATH]
+                               用 root shell 进入实例，或把某个路径复制出来
   ./install.sh fork SRC NEW [--agent A] [--mode M] [--workspace DIR] [--from ID] [--live]
                                从已有容器派生出一个新容器
   ./install.sh upgrade NAME [--image REF]
@@ -701,10 +771,10 @@ create 选项
   --name NAME         容器名（默认：<agent>-box）
   --count N           创建 N 个容器（N > 1 时依次命名为 NAME-1..NAME-N）
   --mode MODE         persistent（systemd，保留状态）或 ephemeral（只运行一次）
-  --workspace DIR     挂载到 /workspace 的宿主目录
+  --workspace DIR     兼容保留：已忽略；实例数据不再来自宿主目录
   --env KEY=VALUE     传给容器的额外环境变量
   --file FILE         从声明文件读取（'-' 表示 stdin）：
-                        name agent [mode] [workspace]
+                        name agent [mode]
   --save FILE         把创建出来的容器按同样格式写回该文件
 
 智能体 Web 界面的 create 选项
@@ -724,12 +794,14 @@ create 选项
   --keep N                      快照专用：只保留最新的 N 个快照（默认 5）
   --purge-snapshots             remove 时：连快照一起删除
   --keep-volume                 remove 时：保留 home 卷
-  --skip-safety                 rollback 时：不先给容器做快照
+  --skip-safety                 rollback/restore 时：不先做安全快照
+  --copy PATH                   rescue 时：把该路径复制出来，而不是打开 root shell
   --follow, -f / --tail N       logs 时：跟踪日志／只显示最后 N 行
   --help-agents                 列出本次构建提供的智能体
   --help, -h                    显示本帮助
 
 宿主路径
+  实例数据：在实例自身的 home 存储里（不再从宿主目录挂载）；用 backup 导出
   容器与快照：  $XDG_DATA_HOME（默认 ~/.local/share）/agent-workspace
   凭据（权限 600）：  $XDG_CONFIG_HOME（默认 ~/.config）/agent-workspace/containers
   实例内 root 的密码（权限 600）：  $XDG_CONFIG_HOME（默认 ~/.config）/agent-workspace/credentials
@@ -755,6 +827,12 @@ agent-workspace installer
   ./install.sh rollback NAME [--to ID]
                                replace the container with a snapshot
   ./install.sh recover NAME    rebuild a lost or stopped container
+  ./install.sh backup NAME [--to FILE]
+                               archive the instance's data with a verified manifest
+  ./install.sh restore NAME ARCHIVE [--skip-safety]
+                               validate the archive, then restore it (safety clone first)
+  ./install.sh rescue NAME [--copy PATH]
+                               get a root shell in the instance, or copy a path out
   ./install.sh fork SRC NEW [--agent A] [--mode M] [--workspace DIR] [--from ID] [--live]
                                branch a new container off an existing one
   ./install.sh upgrade NAME [--image REF]
@@ -774,10 +852,10 @@ create options
   --name NAME         container name (default: <agent>-box)
   --count N           create N containers (N > 1 names them NAME-1..NAME-N)
   --mode MODE         persistent (systemd, keeps state) or ephemeral (run once)
-  --workspace DIR     host directory mounted at /workspace
+  --workspace DIR     accepted for compatibility; ignored - data lives inside the instance
   --env KEY=VALUE     extra environment variable for the container
   --file FILE         read a declaration file ('-' for stdin):
-                        name agent [mode] [workspace]
+                        name agent [mode]
   --save FILE         write the created containers back out in that format
 
 create options for the agent web UI
@@ -799,12 +877,14 @@ global options
   --keep N                      snapshot only: keep the newest N snapshots (default 5)
   --purge-snapshots             remove: drop snapshots too
   --keep-volume                 remove: keep the home volume
-  --skip-safety                 rollback: do not snapshot the container first
+  --skip-safety                 rollback/restore: do not take a safety snapshot first
+  --copy PATH                   rescue: copy this path out instead of opening a root shell
   --follow, -f / --tail N       logs: follow the log / show the last N lines
   --help-agents                 list the agents this build offers
   --help, -h                    this help
 
 host paths
+  instance data:   inside the instance's own home storage (no host folder mount); export it with backup
   containers and snapshots:  $XDG_DATA_HOME (default ~/.local/share)/agent-workspace
   credentials (mode 600):    $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/containers
   in-instance root password: $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/credentials

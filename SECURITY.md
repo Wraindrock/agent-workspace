@@ -43,8 +43,7 @@ rotation of anything that leaked.
   (rootless) when the agent is not fully trusted, and prefer a virtual machine
   when the boundary must be hard.
 - **The `incus` backend hands the workspace to a host daemon.** With `--backend
-  incus` - or in `auto` mode whenever the daemon answers before podman does - the
-  workspace is an unprivileged Incus instance: `incusd` owns its lifecycle, its disk
+  incus` the workspace is an unprivileged Incus instance: `incusd` owns its lifecycle, its disk
   devices and its `proxy` device. The host-level setup that makes the daemon usable
   (`sudo systemctl enable --now incus.socket`, `sudo incus admin init --minimal`) is
   deliberately left to you: `install.sh` never runs `sudo`, never writes under `/etc`
@@ -52,6 +51,21 @@ rotation of anything that leaked.
   so container root is not host root, exactly as with the container backends; agent
   credentials reach the daemon on stdin (`config set <name> environment.KEY -`)
   instead of on a command line, so they stay out of `ps` and the shell history.
+- **Data lives inside the instance, and the engine volume is not a host
+  boundary.** `install.sh` no longer bind-mounts a host directory into an
+  instance: the agent works in `/home/agent`, which is a named engine volume for
+  `podman`/`docker` and the instance disk plus the installer-managed
+  `~/.local/share/agent-workspace/incus/homes/<name>` directory for `incus`. That
+  storage is engine-managed and survives the instance, but it is **not** secret
+  from the host user: a rootless engine runs as you, and `incusd`'s home
+  directory is a normal host directory. It protects your data from a damaged
+  instance, not from the host account. `backup` archives are plain `tar.gz` files
+  (written with mode `600`) and contain whatever is in `/home/agent`, including
+  any token the agent stored there; treat them like credentials, and validate
+  their contents before restoring an archive you did not create. `restore`
+  validates the archive and takes a pre-restore clone, and `rescue` exposes a root
+  shell inside the instance - they widen what the host user can do to instance
+  data, not the instance's boundary against the host.
 - **Inside the container, nothing confines the agent.** `install.sh enter` and
   `shell` `exec` into the container as its default user, which is root: this
   installer never creates a container with `--user`. Only the web UI drops to the
