@@ -38,7 +38,11 @@ BIN_DOCKER="$WORK/bin-docker"
 # pick up a real podman or docker just because the host (or a CI runner) has
 # one installed.
 BIN_NOSH="$WORK/bin-nosh"
-mkdir -p "$BIN" "$BIN_DOCKER" "$BIN_NOSH" "$HOME" "$WORKSPACE_ROOT" "$FAKE_ENGINE_STATE"
+# ${CONF_HOME}/agent-workspace/backend holds the remembered backend choice. The
+# test that asserts "with no remembered choice the installer refuses" moves this
+# aside on purpose, so keep the path in one place.
+CONF_DIR="$XDG_CONFIG_HOME/agent-workspace"
+mkdir -p "$BIN" "$BIN_DOCKER" "$BIN_NOSH" "$HOME" "$WORKSPACE_ROOT" "$FAKE_ENGINE_STATE" "$CONF_DIR"
 
 # make_engine_wrapper DIR NAME: a podman/docker stand-in that delegates to the fake
 make_engine_wrapper() {
@@ -58,13 +62,20 @@ export PATH="$BIN:$PATH"
 
 for tool in bash sh env cat sed grep tr head tail sort date dirname basename mkdir \
   rm cp mv chmod install tar find ls cut awk expr uname id sleep touch wc ln du df \
-  mktemp uniq tee sha256sum realpath readlink stat hostname seq which; do
+  mktemp uniq tee sha256sum realpath readlink stat hostname seq which paste; do
   tool_path="$(command -v "$tool" 2>/dev/null || true)"
   [[ -n "$tool_path" ]] && ln -sf "$tool_path" "$BIN_NOSH/$tool"
 done
 
 # a PATH that offers docker and nothing else, for the engine selection tests
 DOCKER_ONLY_PATH="$BIN_DOCKER:$BIN_NOSH"
+
+# A remembered backend choice, the same file `install.sh backend set` writes.
+# There is no automatic selection any more, and `run` always feeds the installer
+# /dev/null: without this every command below would refuse for want of a choice.
+# The "no remembered choice" tests below move this file aside on purpose.
+printf 'backend=podman\n' >"$CONF_DIR/backend"
+chmod 0600 "$CONF_DIR/backend"
 
 # A PATH whose `date` freezes the snapshot-id call, so two snapshots can be made
 # inside the same "second" on demand - the condition under which ids used to be
@@ -126,6 +137,23 @@ run_installer() { # run_installer PATH [args...]
   RUN_STATUS=$?
 }
 run() { run_installer "$PATH" "$@"; }
+# run_with_tty runs the installer on a real pty (via `script`), so the interactive
+# chooser sees stdin as a terminal exactly as it would for a person; the second
+# argument is the line typed at the prompt. This is the one behaviour a pipe
+# cannot fake, which is why it uses util-linux `script` rather than a fake fd.
+run_with_tty() { # run_with_tty PATH answer [args...]
+  local path="$1" answer="$2"; shift 2
+  local -a cmd=(env "PATH=$path" "HOME=$HOME" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
+    "XDG_DATA_HOME=$XDG_DATA_HOME" "WORKSPACE_ROOT=$WORKSPACE_ROOT"
+    "FAKE_ENGINE_STATE=$FAKE_ENGINE_STATE" "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY"
+    "WEB_PORT_BASE=$WEB_PORT_BASE" bash "$INSTALLER")
+  local arg
+  for arg in "$@"; do cmd+=("$arg"); done
+  printf '%s\r' "$answer" >"$WORK/pty-answer"
+  RUN_OUT="$(script -q -e -c "$(printf '%q ' "${cmd[@]}")" /dev/null \
+    <"$WORK/pty-answer" 2>&1)"
+  RUN_STATUS=$?
+}
 # run_same_second runs the installer with a frozen snapshot clock (see
 # SAME_SECOND_PATH above), so every snapshot it takes lands in the same second.
 run_same_second() { run_installer "$SAME_SECOND_PATH" "$@"; }
@@ -397,7 +425,9 @@ is "list exits 0" 0 "$RUN_STATUS"
 contains "list shows the container" box1 "$RUN_OUT"
 contains "list shows the stopped state" stopped "$RUN_OUT"
 contains "list shows the agent" dsh "$RUN_OUT"
-contains "list warns about the engine choice" "more than one backend is installed" "$RUN_OUT"
+# No "which backend did it pick?" warning any more: with no auto there is
+# nothing to warn about, because the choice is the remembered one.
+lacks "list no longer warns about guessing" "more than one backend" "$RUN_OUT"
 run start box1
 is "start exits 0" 0 "$RUN_STATUS"
 is "start starts the container" running "$(fake_state box1)"
@@ -675,6 +705,111 @@ is "doctor fails when a home volume is missing" 1 "$RUN_STATUS"
 contains "doctor reports the missing volume" "home volume" "$RUN_OUT"
 
 # =========================================================================
+# Backend choice: no auto. Every `run` here feeds the installer /dev/null, so
+# these are the non-interactive paths. The list must name every backend with its
+# availability, and the remembered file is the only place a choice comes from.
+echo "backend choice (no auto)"
+
+run backend
+is "backend shows the remembered choice" 0 "$RUN_STATUS"
+contains "backend names the remembered backend" "podman" "$RUN_OUT"
+contains "backend says it is remembered" "remembered backend" "$RUN_OUT"
+# The backend list is the "list" surface: every backend with its availability,
+# including the ones this host does not have and the gated incus.
+contains "backend lists kvm" "kvm" "$RUN_OUT"
+contains "backend lists docker" "docker" "$RUN_OUT"
+contains "backend lists incus" "incus" "$RUN_OUT"
+contains "backend marks incus not selectable" "not selectable" "$RUN_OUT"
+contains "backend marks availability" "available" "$RUN_OUT"
+
+run backend set docker
+is "backend set exits 0" 0 "$RUN_STATUS"
+contains "backend set confirms the new choice" "remembered backend docker" "$RUN_OUT"
+is "backend set writes the remembered choice" "backend=docker" "$(cat "$CONF_DIR/backend")"
+is "the remembered choice is mode 600" 600 "$(stat -c '%a' "$CONF_DIR/backend")"
+run backend
+is "the new choice is reported back" 0 "$RUN_STATUS"
+contains "the new choice is reported back" "remembered backend docker" "$RUN_OUT"
+run backend set podman
+run backend
+contains "the choice can be set back" "remembered backend podman" "$RUN_OUT"
+
+run backend set nosuchbackend
+is "an unknown backend name is refused" 1 "$RUN_STATUS"
+contains "the refusal names the valid backends" "kvm" "$RUN_OUT"
+is "a refused name is not written" "backend=podman" "$(cat "$CONF_DIR/backend")"
+
+# The gate: visible in the list, refused as a choice.
+run backend set incus
+is "remembering incus is refused" 1 "$RUN_STATUS"
+contains "the incus refusal explains the gate" "not selectable" "$RUN_OUT"
+run --backend incus list
+is "--backend incus is refused" 1 "$RUN_STATUS"
+contains "the explicit incus refusal explains the gate" "not selectable" "$RUN_OUT"
+run --backend incus doctor
+contains "the gate message names the implementation" "backend-incus.sh" "$RUN_OUT"
+contains "the gate message names the escape hatch" "AW_ENABLE_BACKEND_INCUS" "$RUN_OUT"
+run backend
+contains "a refused incus is not remembered" "podman" "$RUN_OUT"
+lacks "a refused incus did not overwrite the choice" "backend=incus" "$(cat "$CONF_DIR/backend")"
+
+# `--backend` wins for one run and must not write back.
+run --backend docker list
+is "--backend docker runs" 0 "$RUN_STATUS"
+remembered="$(cat "$CONF_DIR/backend")"
+is "--backend does not write back to the remembered choice" "backend=podman" "$remembered"
+# No remembered choice and no --backend: refuse, print the same list. Moving the
+# file aside is what makes this the "brand new user, non-interactive" case.
+mv "$CONF_DIR/backend" "$CONF_DIR/backend.saved"
+# The refusal is about choosing; --dry-run is planning and still has to work
+# for a brand new user, so it assumes podman and says so instead of dying.
+run --dry-run list
+is "--dry-run without a chosen backend still plans" 0 "$RUN_STATUS"
+contains "the dry-run says which backend it assumed" "assumes podman" "$RUN_OUT"
+run list
+is "no remembered choice and no tty fails" 1 "$RUN_STATUS"
+contains "the refusal says how to choose" "--backend" "$RUN_OUT"
+contains "the refusal says why it will not choose" "non-interactive" "$RUN_OUT"
+contains "the refusal prints the backend list" "podman" "$RUN_OUT"
+contains "the printed list includes kvm" "kvm" "$RUN_OUT"
+contains "the printed list includes docker" "docker" "$RUN_OUT"
+contains "the printed list still includes the gated incus" "incus" "$RUN_OUT"
+contains "the printed list warns incus is not selectable" "not selectable" "$RUN_OUT"
+# A typo is a usage error before it is a backend question: it must keep
+# saying "unknown command" even with no backend chosen.
+run frobnicate
+is "an unknown command still fails with no backend chosen" 1 "$RUN_STATUS"
+contains "the unknown command is named" "unknown command" "$RUN_OUT"
+lacks "a typo is not reported as a backend question" "no --backend given" "$RUN_OUT"
+mv "$CONF_DIR/backend.saved" "$CONF_DIR/backend"
+
+run list
+is "with the choice restored the command runs again" 0 "$RUN_STATUS"
+
+# With a terminal and no remembered choice, the same list is printed and the
+# answer is taken from it - then remembered, so the next run does not ask.
+mv "$CONF_DIR/backend" "$CONF_DIR/backend.before-chooser"
+run_with_tty "$PATH" docker list
+is "the interactive chooser exits 0" 0 "$RUN_STATUS"
+contains "the chooser prints the list" "trade-off" "$RUN_OUT"
+contains "the chooser asks the question" "which backend" "$RUN_OUT"
+contains "the chooser confirms what it remembered" "remembered backend docker" "$RUN_OUT"
+is "the interactive answer is remembered" "backend=docker" "$(cat "$CONF_DIR/backend")"
+is "the remembered file is mode 600" 600 "$(stat -c '%a' "$CONF_DIR/backend")"
+run list
+is "the next run uses the remembered choice" 0 "$RUN_STATUS"
+mv "$CONF_DIR/backend" "$CONF_DIR/backend.after-chooser"
+run_with_tty "$PATH" nosuchbackend list
+is "a bad answer to the chooser fails" 1 "$RUN_STATUS"
+contains "the bad answer is named" "unknown backend 'nosuchbackend'" "$RUN_OUT"
+mv "$CONF_DIR/backend.before-chooser" "$CONF_DIR/backend"
+
+# The list shows availability per backend: on this PATH both fakes answer.
+run --backend podman doctor
+contains "doctor lists the remembered backend preference" "remembered backend: podman" "$RUN_OUT"
+contains "the backend list marks availability" "available" "$RUN_OUT"
+
+# =========================================================================
 echo "remove"
 
 # A destructive command with nobody to ask must refuse, and must not exit 0. The
@@ -848,19 +983,28 @@ is "the docker-only PATH has no podman" "" \
 run create --engine docker --agent dsh --name podd --yes
 is "--engine docker exits 0" 0 "$RUN_STATUS"
 is "the container records docker" docker "$(meta_key podd ENGINE)"
+# There is no auto any more, and this PATH offers no podman while podman is the
+# remembered choice: the run must refuse (not quietly switch) and it must still
+# print the whole list plus the command that changes the choice.
 run_installer "$DOCKER_ONLY_PATH" create --agent dsh --name dbox --yes
-is "docker is detected when it is the only engine" 0 "$RUN_STATUS"
+is "a remembered backend that is not installed fails" 1 "$RUN_STATUS"
+contains "the missing remembered backend is named" "podman is not installed" "$RUN_OUT"
+contains "the refusal says how to change the choice" "backend set NAME" "$RUN_OUT"
+run_installer "$DOCKER_ONLY_PATH" --backend docker create --agent dsh --name dbox --yes
+is "--backend docker on a docker-only PATH exits 0" 0 "$RUN_STATUS"
 is "the docker container runs" running "$(fake_state dbox)"
 contains "docker containers get cgroup mounts" "--cgroupns=host" "$(engine_log)"
+# With no remembered choice the explicit flag is the whole story, and its
+# message must still name both spellings of the flag.
+mv "$CONF_DIR/backend" "$CONF_DIR/backend.saved"
 run_installer "$DOCKER_ONLY_PATH" --engine podman doctor
-is "requesting a missing engine fails" 1 "$RUN_STATUS"
-contains "the missing engine is reported" "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
-# `--backend` is the same flag under its newer name: the refusal has to name both,
-# because either one may be the flag the user typed.
+contains "an explicitly requested missing engine names both spellings" \
+  "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
 run_installer "$DOCKER_ONLY_PATH" --backend podman doctor
-is "--backend is accepted as the same flag" 1 "$RUN_STATUS"
-contains "the refusal names both spellings" "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
-run_installer "$DOCKER_ONLY_PATH" remove dbox --yes
+contains "the --backend spelling is named too" \
+  "--backend/--engine podman was requested but podman is not installed" "$RUN_OUT"
+mv "$CONF_DIR/backend.saved" "$CONF_DIR/backend"
+run_installer "$DOCKER_ONLY_PATH" remove dbox --backend docker --yes
 is "a docker container can be removed" 0 "$RUN_STATUS"
 missing "the docker container state is gone" "$(data)/containers/dbox"
 run_installer "$BIN_NOSH" --help-agents
@@ -869,6 +1013,7 @@ contains "--help-agents lists the built-in agents" "dsh" "$RUN_OUT"
 run_installer "$BIN_NOSH" create --agent dsh --name engineless --yes
 is "creating without an engine fails" 1 "$RUN_STATUS"
 contains "the missing engine is reported when there is none" "neither incus, podman nor docker" "$RUN_OUT"
+contains "the no-engine refusal still prints the backend list" "kvm" "$RUN_OUT"
 
 # =========================================================================
 echo "create (container that does not stay up)"

@@ -53,6 +53,40 @@ state_list() {
   done | sort
 }
 
+# --- the remembered backend choice -----------------------------------------
+#
+# One value, one file, next to the credentials: ${CONF_HOME}/backend. It is a
+# preference (what the user wants), not instance state (where an instance
+# lives), which is why it is not a per-container meta file. Nothing here writes
+# through the shell: `>` would follow a symlink and a race, so the value is
+# written to a same-directory temp file and renamed over the target. Same
+# directory because /tmp may be another filesystem, and then mv is a copy plus
+# unlink, which is not atomic.
+
+preference_path() { printf '%s' "${CONF_HOME}/backend"; }
+
+state_preference() {
+  local file value=""
+  file="$(preference_path)"
+  if [[ -f "$file" ]]; then
+    value="$(sed -n 's/^backend=//p' "$file" | head -n 1)"
+  fi
+  printf '%s' "$value"
+}
+
+state_preference_exists() { [[ -f "$(preference_path)" ]]; }
+
+state_remember() {
+  local value="${1:-}" file dir tmp
+  file="$(preference_path)"
+  dir="$(dirname "$file")"
+  install -d -m 0700 "$dir"
+  tmp="$(mktemp "${dir}/.backend.XXXXXX")"
+  chmod 0600 "$tmp"
+  printf 'backend=%s\n' "$value" >"$tmp"
+  mv "$tmp" "$file"
+}
+
 state_record_event() {
   local name="${1}" text="${2}" file
   file="$(meta_path "${name}")"

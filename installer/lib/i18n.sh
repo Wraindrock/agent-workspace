@@ -164,6 +164,14 @@ t() {
         err_unknown_mode)     value="未知模式 '%s'（应为 persistent 或 ephemeral）" ;;
         err_backend_not_ready) value="后端 %s 已安装但还不能用：%s" ;;
         err_backend_missing)  value="请求了后端 %s，但它没有安装" ;;
+        err_backend_unknown)  value="未知后端 '%s'（可选：kvm、podman、docker、incus）" ;;
+        err_backend_disabled) value="后端 %s 在本次版本里暂不可选：它需要另一套宿主系统；实现与测试都还在（%s）；要恢复选择请设 AW_ENABLE_BACKEND_INCUS=1，并把 %s 从 BACKEND_GATED 里去掉" ;;
+        err_backend_unimplemented) value="后端 %s 在本次版本里还没有实现：没有提供 %s；把可启动磁盘做成镜像是刻意的非目标（见 docs/backend-model.md）" ;;
+        err_backend_not_chosen) value="没有指定 --backend，也没有记住的选择；非交互运行无法替你决定（可用：kvm、podman、docker、incus）" ;;
+        err_backend_choice_aborted) value="没有读到后端选择；非交互运行请用 --backend NAME，或先 install.sh backend set NAME" ;;
+        err_backend_pref_missing) value="记住的后端 %s 没有安装；装上它，或用 install.sh backend set NAME 换一个" ;;
+        err_backend_set_needs_name) value="backend set 需要一个后端名（kvm、podman、docker、incus）" ;;
+        err_backend_subcommand) value="未知的 backend 子命令 '%s'；用法：install.sh backend [set NAME]" ;;
         err_no_backend_impl)  value="没有后端 %s 的实现文件（期望 %s）" ;;
         err_incus_helper)     value="Incus 不能直接拉取 OCI 镜像：需要 podman 或 docker（以及 xz）把 %s 导出成 rootfs 再导入" ;;
         err_incus_image_missing) value="镜像 %s 还没有导入 Incus；先跑 ./install.sh pull（create/upgrade 也会顺手拉）" ;;
@@ -227,6 +235,28 @@ t() {
         doc_web_missing)      value="Web 界面已启用，但没有发布宿主端口；运行：install.sh recover %s" ;;
         doc_snap_ok)          value="快照 %s 的归档可读" ;;
         doc_snap_bad)         value="快照 %s 的归档已损坏：%s" ;;
+        doc_backend_pref)     value="记住的后端：%s" ;;
+        # --- backend choice (no auto) --------------------------------------
+        backend_list_title)   value="容器后端（不会自动替你选）：" ;;
+        backend_list_backend) value="后端" ;;
+        backend_list_available) value="本机可用性" ;;
+        backend_list_about)   value="取舍" ;;
+        backend_mark_recommended) value="★" ;;
+        backend_mark_blank)   value=" " ;;
+        backend_available)    value="可用" ;;
+        backend_unavailable)  value="未安装" ;;
+        backend_not_ready_state) value="已安装但不可用（%s）" ;;
+        backend_gated)        value="暂不可选" ;;
+        backend_unimplemented) value="暂未实现" ;;
+        backend_list_prompt)  value="用哪个后端？（输入名字，回车确认；可用：%s）" ;;
+        backend_remembered)   value="使用记住的后端 %s（改：install.sh backend set NAME）" ;;
+        backend_none_remembered) value="还没有记住任何后端；用 install.sh backend set NAME 指定" ;;
+        backend_pref_set)     value="已记住后端 %s（%s）" ;;
+        backend_pref_missing_file) value="还没有记住后端；先运行：install.sh backend set NAME" ;;
+        backend_trade_kvm)    value="完整系统：自带内核与 init，需要它们的操作都能做；代价是要先把镜像做成可启动磁盘，再真实占用内存与磁盘" ;;
+        backend_trade_podman) value="最轻最快，无需额外准备；共享宿主内核，有些操作在结构上做不到" ;;
+        backend_trade_docker) value="与 podman 同样共享宿主内核；已经用 docker 的宿主更顺手，实例内 init 需要 --privileged" ;;
+        backend_trade_incus)  value="非特权系统容器，隔离更强；由守护进程管理，需要先做一次性宿主准备；本次版本暂不可选" ;;
         # --- web UI --------------------------------------------------------
         web_starting)         value="%s：正在启动 Web 界面（首次启动还没跑完就等它跑完）" ;;
         warn_firstboot_pending) value="'%s' 的首次启动还没跑完（已等 %s 秒）；容器在运行，但 Web 界面还没起来；等它就绪后运行：install.sh web %s" ;;
@@ -390,6 +420,14 @@ t() {
         err_unknown_mode)     value="unknown mode '%s' (expected persistent or ephemeral)" ;;
         err_backend_not_ready) value="backend %s is installed but not usable yet: %s" ;;
         err_backend_missing)  value="--backend/--engine %s was requested but %s is not installed" ;;
+        err_backend_unknown)  value="unknown backend '%s' (choose one of: kvm, podman, docker, incus)" ;;
+        err_backend_disabled) value="backend %s is not selectable in this version: it needs a different host system; the implementation and its tests are still here (%s); setting AW_ENABLE_BACKEND_INCUS=1 and removing %s from BACKEND_GATED brings it back" ;;
+        err_backend_unimplemented) value="backend %s is not implemented in this version: no %s; building an OCI image into a bootable disk is a deliberate non-goal (docs/backend-model.md)" ;;
+        err_backend_not_chosen) value="no --backend given and no remembered choice; a non-interactive run will not decide this for you (choose one of: kvm, podman, docker, incus)" ;;
+        err_backend_choice_aborted) value="no backend choice was read; for a non-interactive run use --backend NAME, or install.sh backend set NAME first" ;;
+        err_backend_pref_missing) value="the remembered backend %s is not installed; install it, or choose another with install.sh backend set NAME" ;;
+        err_backend_set_needs_name) value="backend set needs a backend name (kvm, podman, docker, incus)" ;;
+        err_backend_subcommand) value="unknown backend subcommand '%s'; usage: install.sh backend [set NAME]" ;;
         err_no_backend_impl)  value="no backend implementation for '%s' (expected %s)" ;;
         err_incus_helper)     value="Incus cannot pull an OCI image: podman or docker (and xz) is needed to export %s into a rootfs it can import" ;;
         err_incus_image_missing) value="the image %s is not imported into Incus yet; run ./install.sh pull (create and upgrade pull too)" ;;
@@ -453,6 +491,28 @@ t() {
         doc_web_missing)      value="web UI is enabled but no host port is published; run: install.sh recover %s" ;;
         doc_snap_ok)          value="snapshot %s archive readable" ;;
         doc_snap_bad)         value="snapshot %s archive is corrupt: %s" ;;
+        doc_backend_pref)     value="remembered backend: %s" ;;
+        # --- backend choice (no auto) --------------------------------------
+        backend_list_title)   value="container backends (nothing is picked for you):" ;;
+        backend_list_backend) value="backend" ;;
+        backend_list_available) value="on this host" ;;
+        backend_list_about)   value="trade-off" ;;
+        backend_mark_recommended) value="*" ;;
+        backend_mark_blank)   value=" " ;;
+        backend_available)    value="available" ;;
+        backend_unavailable)  value="not installed" ;;
+        backend_not_ready_state) value="installed but not usable (%s)" ;;
+        backend_gated)        value="not selectable in this version" ;;
+        backend_unimplemented) value="not implemented" ;;
+        backend_list_prompt)  value="which backend? (type a name and press enter; choose one of: %s)" ;;
+        backend_remembered)   value="using the remembered backend %s (change: install.sh backend set NAME)" ;;
+        backend_none_remembered) value="no backend remembered yet; set one with install.sh backend set NAME" ;;
+        backend_pref_set)     value="remembered backend %s (%s)" ;;
+        backend_pref_missing_file) value="no backend remembered yet; run install.sh backend set NAME first" ;;
+        backend_trade_kvm)    value="a complete system: its own kernel and init, so operations that need them work; costs building the image into a bootable disk and giving up real memory and disk" ;;
+        backend_trade_podman) value="lightest and fastest, no preparation; shares the host kernel, so some operations are structurally impossible" ;;
+        backend_trade_docker) value="same host-kernel trade-off as podman; convenient where docker is already the host's tool, an in-instance init needs --privileged" ;;
+        backend_trade_incus)  value="unprivileged system containers, stronger isolation; managed by a daemon that needs one-time host preparation; not selectable in this version" ;;
         # --- web UI --------------------------------------------------------
         web_starting)         value="starting the web UI in %s (waiting for its first boot if that is still running)" ;;
         warn_firstboot_pending) value="'%s' has not finished its first boot (waited %s s); the container runs but its web UI is not up yet - run: install.sh web %s" ;;
@@ -586,6 +646,8 @@ agent-workspace installer（安装器）
   ./install.sh upgrade NAME [--image REF]
                                把容器迁移到更新的镜像（会先创建快照）
   ./install.sh remove NAME...  删除容器（加 --purge-snapshots 连快照一起删）
+  ./install.sh backend [set NAME]
+                               查看或修改记住的后端（不会自动替你选）
   ./install.sh doctor [--strict]
                                检查引擎、容器、卷与凭据
 
@@ -605,8 +667,8 @@ create 选项
   --no-web            不为这些容器发布 Web 端口
 
 全局选项
-  --backend auto|incus|podman|docker
-                                用哪个后端（默认：auto；--engine 是别名）
+  --backend, --engine NAME       用哪个后端；不传就用记住的选择，
+                                没有记住的就把清单打印出来问你
   --image REF                   要运行的镜像（默认：取自 image.env）
   --no-tui                      绝不启动 TUI；该提问时直接失败
   --dry-run, -n                 只打印引擎命令，不真正执行
@@ -652,6 +714,9 @@ agent-workspace installer
   ./install.sh upgrade NAME [--image REF]
                                move a container to a newer image (snapshot first)
   ./install.sh remove NAME...  remove containers (add --purge-snapshots)
+  ./install.sh backend [set NAME]
+                               show or change the remembered backend (never
+                               picked for you)
   ./install.sh doctor [--strict]
                                check engines, containers, volumes, credentials
 
@@ -672,9 +737,9 @@ create options for the agent web UI
   --no-web            do not publish a web UI port for these containers
 
 global options
-  --backend auto|incus|podman|docker
-                                which backend to use (default: auto; --engine is
-                                an alias)
+  --backend, --engine NAME       which backend to use; without it the remembered
+                               choice is used, or the list is printed and you are
+                               asked
   --image REF                   image to run (default: from image.env)
   --no-tui                      never start the TUI; fail instead of prompting
   --dry-run, -n                 print the engine commands instead of running

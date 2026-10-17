@@ -40,19 +40,90 @@
 
 ENGINE="${ENGINE:-}"
 ENGINE_BIN="${ENGINE_BIN:-}"
-BACKEND_REQUEST="${BACKEND_REQUEST:-auto}"
+# Empty means "the user did not pass --backend". It is deliberately NOT "auto":
+# there is no automatic backend choice (docs/backend-model.md, "Backend
+# selection: no auto"). The remembered choice (state_backend_pref) is consulted
+# only when this is empty, and a non-interactive run with no remembered choice
+# fails instead of picking one.
+BACKEND_REQUEST="${BACKEND_REQUEST:-}"
 BACKEND_DIR="${BACKEND_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
-# backend_names prints every backend this installer knows, in preference order.
-# Incus leads: a workspace in a system container is the isolation this project
-# is for. It only counts as *present* once backend-incus.sh exists, so an
-# incomplete tree never advertises a backend it cannot drive.
+# Backends that are implemented but deliberately not selectable in this
+# version. A gate rather than a deletion (docs/backend-model.md, "Incus:
+# visible, not hidden, not selectable"): backend-incus.sh stays in the tree, in
+# the list, in the help and under test; only the selection is refused. One
+# flag turns it back on for a host that can actually run it.
+BACKEND_GATED="${BACKEND_GATED:-incus}"
+AW_ENABLE_BACKEND_INCUS="${AW_ENABLE_BACKEND_INCUS:-0}"
+# kvm is the recommended backend in the design, but this version has no
+# backend-kvm.sh: a bootable disk is still a non-goal. It is listed with its
+# trade-offs and marked not-selectable, so the comparison the user needs is
+# complete (docs/backend-model.md, the backend table).
+BACKEND_UNIMPLEMENTED="${BACKEND_UNIMPLEMENTED:-kvm}"
+
+# backend_gated NAME: is NAME refused for now? The environment flag is the
+# documented way to turn the gate off; a bare `0` (the default) keeps it on.
+backend_gated() {
+  local name="${1:-}"
+  if [[ "$name" == "incus" && "${AW_ENABLE_BACKEND_INCUS:-0}" != "0" ]]; then
+    return 1
+  fi
+  case ",${BACKEND_GATED}," in
+    *",${name},"*) return 0 ;;
+  esac
+  return 1
+}
+
+# backend_unimplemented NAME: known from the design, not driven by this version.
+backend_unimplemented() {
+  case ",${BACKEND_UNIMPLEMENTED}," in
+    *",${1:-},"*) return 0 ;;
+  esac
+  return 1
+}
+
+# backend_installable NAME: does this tree carry an implementation for NAME? The
+# gate and the unimplemented list are about *selecting* a backend, not about
+# whether the code exists, so they are checked where a choice is made
+# (validate_backend and resolve_backend), never here: backend_names has to keep
+# telling the truth about what is installed.
+backend_installable() {
+  local name="${1:-}"
+  [[ -r "${BACKEND_DIR}/backend-${name}.sh" ]]
+}
+
+# backend_all_names prints every backend the model knows, in the order the
+# comparison table lists them: the recommendation first, then the lighter
+# container backends, then the one that is gated. Unlike backend_names this is
+# not filtered by what is installed, because the user has to see the trade-offs
+# of a backend they do not have yet.
+backend_all_names() {
+  printf '%s\n' kvm podman docker incus
+}
+
+# validate_backend NAME: is NAME one of the backends this model knows? The
+# remembered choice and the command line both go through this, so a typo can
+# never be stored and later resolved into something surprising.
+validate_backend() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || return 1
+  case ",$(backend_all_names | paste -sd, -)," in
+    *",${name},"*) return 0 ;;
+  esac
+  return 1
+}
+
+# backend_names prints every backend this installer can drive that is present on
+# the host, in preference order. The gate is deliberately ignored here: a gated
+# backend is still installed, still worth listing, and the incus tests use this
+# to prove the gate is about selectability, not deletion. Selecting it is
+# refused in validate_backend and resolve_backend. It only counts as *present*
+# once backend-NAME.sh exists, so an incomplete tree never advertises a backend
+# it cannot drive.
 backend_names() {
   local name
   for name in incus podman docker; do
-    if [[ "$name" == "incus" ]]; then
-      [[ -r "${BACKEND_DIR}/backend-incus.sh" ]] || continue
-    fi
+    backend_installable "$name" || continue
     command -v "$name" >/dev/null 2>&1 || continue
     printf '%s\n' "$name"
   done
@@ -89,8 +160,104 @@ backend_not_ready_hint() {
   esac
 }
 
+# backend_status_key NAME prints the catalogue key naming NAME's state on this
+# host, plus the `available` fallback (plus: `awk -v x="$(...)"` would be the
+# alternative, and it is less readable).
+backend_status_key() {
+  local name="${1:-}"
+  if backend_unimplemented "$name"; then
+    printf 'backend_unimplemented'
+  elif backend_gated "$name"; then
+    printf 'backend_gated'
+  elif command -v "$name" >/dev/null 2>&1; then
+    printf 'backend_available'
+  else
+    printf 'backend_unavailable'
+  fi
+}
+
+# backend_recommended NAME: does the model recommend this one here? kvm is the
+# recommendation "when /dev/kvm exists"; the container backends are recommended
+# for what they are, and the gated one is not recommended while it is gated.
+backend_recommended() {
+  local name="${1:-}"
+  case "$name" in
+    kvm)    [[ -e /dev/kvm ]] ;;
+    podman) return 0 ;;
+    docker) return 0 ;;
+    *)      return 1 ;;
+  esac
+}
+
+# backend_line NAME prints one row of the comparison list: a recommendation
+# mark, the backend name, its availability on this host and its trade-off. Every
+# word comes from the catalogue via tf, so the row is bilingual like the rest of
+# the installer. Output is data, not a message: it is what the user compares, so
+# it is printed even under --quiet.
+backend_line() {
+  local name="${1:-}" mark="backend_mark_blank"
+  if backend_recommended "$name"; then mark="backend_mark_recommended"; fi
+  printf '  %-2s %-8s %-30s %s\n' \
+    "$(tf "$mark")" "$name" "$(tf "$(backend_status_key "$name")")" "$(tf "backend_trade_${name}")"
+}
+
+# backend_list prints the comparison the user has to weigh (docs/backend-model.md,
+# the backend table). It goes to stdout and does not die, because both the
+# interactive chooser and the non-interactive refusal show the same list.
+backend_list() {
+  heading_k backend_list_title
+  printf '  %-2s %-8s %-30s %s\n' \
+    '' "$(tf backend_list_backend)" "$(tf backend_list_available)" "$(tf backend_list_about)"
+  printf '  %s\n' "$(printf '%.0s-' {1..72})"
+  local name
+  # A for loop, not `read` from a here-string: the installer is routinely run with
+  # stdin on /dev/null, and a here-string would still take its fd from that.
+  for name in $(backend_all_names); do
+    backend_line "$name"
+  done
+}
+
+# die_backend_gated NAME / die_backend_unimplemented NAME: the two refusals that
+# need the implementation file in the message. One place builds them, because the
+# catalogue wording names the file and the escape hatch and every caller must
+# pass both (a missing argument used to print an empty parenthesis).
+die_backend_gated() {
+  die_k err_backend_disabled "${1}" "installer/lib/backend-${1}.sh" "${1}"
+}
+
+die_backend_unimplemented() {
+  die_k err_backend_unimplemented "${1}" "installer/lib/backend-${1}.sh"
+}
+
+# backend_pick reads the choice from the terminal. Only reached with stdin on a
+# TTY (the non-interactive path refuses instead), so this is a real question the
+# user can answer. Invalid input is an error, never a silent default.
+backend_pick() {
+  local choice="" names_csv=""
+  names_csv="$(backend_all_names | paste -sd, -)"
+  if ! ui_read choice "$(tf backend_list_prompt "$names_csv")"; then
+    die_k err_backend_choice_aborted
+  fi
+  if ! validate_backend "$choice"; then
+    die_k err_backend_unknown "${choice}"
+  fi
+  if backend_gated "$choice"; then
+    die_backend_gated "$choice"
+  fi
+  if backend_unimplemented "$choice"; then
+    die_backend_unimplemented "$choice"
+  fi
+  if ! backend_ready "$choice"; then
+    die_k err_backend_not_ready "${choice}" "$(backend_not_ready_hint "$choice")"
+  fi
+  printf '%s' "$choice"
+}
+
 backend_load() {
   local name="${1:-}" file
+  if backend_gated "$name"; then
+    die_backend_gated "$name"
+  fi
   file="${BACKEND_DIR}/backend-${name}.sh"
   if [[ ! -r "$file" ]]; then
     die_k err_no_backend_impl "${name}" "${file}"
@@ -99,44 +266,71 @@ backend_load() {
   source "$file"
 }
 
-# resolve_engine [auto|NAME]: pick a backend, load it and announce it.
+# backend_installed NAME: is NAME's CLI on PATH at all? Weaker than
+# backend_ready (a binary can be installed and its daemon be down), which is
+# what the list wants: "not installed" and "installed but not answering" are
+# different answers to the user.
+backend_installed() {
+  command -v "${1:-}" >/dev/null 2>&1
+}
+
+# resolve_backend NAME [explicit] turns the chosen backend into a loaded backend.
+# It checks what the choice needs and nothing else, so a remembered name that a
+# later release gated or stopped implementing is reported as such rather than
+# loaded behind the user's back. The second argument says whether the name came
+# from --backend (explicit) or from the remembered choice: the two need different
+# words when the binary is missing, because only the remembered one has a
+# "change the remembered choice" fix.
+resolve_backend() {
+  local name="${1:-}" explicit="${2:-0}"
+  validate_backend "$name" || die_k err_backend_unknown "${name}"
+  if backend_gated "$name"; then
+    die_backend_gated "$name"
+  fi
+  if backend_unimplemented "$name"; then
+    die_backend_unimplemented "$name"
+  fi
+  # The remembered choice can be a backend this host has not installed (anymore).
+  # The point here is that the *remembered* one is gone and the command that
+  # changes it is install.sh backend set NAME, so say that first. An explicit
+  # --backend gets the plain "was requested but is not installed" from
+  # resolve_engine instead: there is no remembered choice to correct.
+  if [[ "$explicit" -eq 0 ]] && ! backend_installed "$name"; then
+    die_k err_backend_pref_missing "${name}"
+  fi
+  resolve_engine "$name"
+}
+
+# resolve_engine NAME loads the requested backend and announces it. It never
+# picks one: the remembered choice and the interactive chooser live in
+# require_engine, which is where "no auto" lives, and an empty NAME here is a
+# bug rather than a hint to guess.
 resolve_engine() {
-  local wanted="${1:-auto}" names pick="" hint=""
-  names="$(backend_names)"
-  if [[ -z "$names" ]]; then
-    die_k need_engine
+  local wanted="${1:-}" hint=""
+  if [[ -z "$wanted" ]]; then
+    die_k err_backend_not_chosen
   fi
-  if [[ "$wanted" == "auto" ]]; then
-    while IFS= read -r candidate; do
-      if backend_ready "$candidate"; then pick="$candidate"; break; fi
-    done <<<"$names"
-    if [[ -z "$pick" ]]; then
-      # Every backend present is installed but not usable. Say which one and
-      # what would fix it instead of dying on a bare "no engine".
-      pick="$(printf '%s\n' "$names" | head -n 1)"
-      hint="$(backend_not_ready_hint "$pick")"
-      die_k err_backend_not_ready "${pick}" "${hint}"
-    fi
-    # More than one is present: the choice is ours, so say which one it is and
-    # how to overrule it (a host with incus *and* podman is the normal case).
-    if [[ "$(printf '%s\n' "$names" | grep -c .)" -gt 1 ]]; then
-      warn_k warn_both_engines "$(printf '%s\n' "$names" | paste -sd, -)" "$pick"
-    fi
-    ENGINE="$pick"
-  else
-    if ! printf '%s\n' "$names" | grep -qx "$wanted"; then
-      die_k err_backend_missing "${wanted}" "${wanted}"
-    fi
-    if ! backend_ready "$wanted"; then
-      die_k err_backend_not_ready "${wanted}" "$(backend_not_ready_hint "$wanted")"
-    fi
-    ENGINE="$wanted"
+  validate_backend "$wanted" || die_k err_backend_unknown "${wanted}"
+  # The gate comes before the binary check: "--backend incus" must say incus is
+  # not selectable in this version, whether or not incus happens to be installed.
+  if backend_gated "$wanted"; then
+    die_backend_gated "$wanted"
   fi
+  if backend_unimplemented "$wanted"; then
+    die_backend_unimplemented "$wanted"
+  fi
+  if ! command -v "$wanted" >/dev/null 2>&1; then
+    die_k err_backend_missing "${wanted}" "${wanted}"
+  fi
+  if ! backend_ready "$wanted"; then
+    hint="$(backend_not_ready_hint "$wanted")"
+    die_k err_backend_not_ready "${wanted}" "${hint}"
+  fi
+  ENGINE="$wanted"
   ENGINE_BIN="$ENGINE"
   backend_load "$ENGINE"
   msg_k engine_line "${ENGINE}" "$(eng_version)"
 }
-
 # use_engine NAME switches to the backend recorded for an existing instance.
 # An instance's backend is not a preference: it is where the instance lives.
 use_engine() {
@@ -149,7 +343,6 @@ use_engine() {
   ENGINE_BIN="$name"
   backend_load "$ENGINE"
 }
-
 # run_engine is the raw, dry-run aware escape hatch. Backends that drive a
 # container CLI use it; nothing outside a backend file should.
 run_engine() {

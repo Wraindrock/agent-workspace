@@ -313,7 +313,7 @@ just verify    # 构建 + 全部容器级测试
 just verify-all # 上述内容再加无需引擎的契约测试
 ~~~
 
-依赖：任选一个后端——`podman`、`docker` 或 `incus`（见[后端](#后端)）——运行
+依赖：任选一个后端——`podman`、`docker` 或 `incus`（见[后端](#后端)）；`kvm` 是推荐但尚未实现——
 `install.sh` 另需 bash 4.4+；构建与自检还需要 `just`。
 仓库自检在装了 `shellcheck`、`actionlint`、`python3`+`pyyaml` 时使用它们，
 没装就跳过；`tests/smoke.sh` 另需 `jq`。CI 只显式安装 `actionlint` 与 `just`，其余
@@ -362,16 +362,34 @@ docs/                    架构、模块、agent、容器、回滚文档
 ## 后端
 
 `install.sh` 不直接跟任何一种引擎打交道：它只调用一组固定动词（create、exec、
-logs、copy、remove……），由后端实现。用 `--backend incus|podman|docker` 指定
-（`--engine` 是等价别名）；默认 `auto` 按 **incus、podman、docker** 的顺序取第一个
-能用的。后端会记在容器状态里，已有容器沿用创建时的后端；`install.sh doctor` 会告诉你
-当前用的是哪个。
+logs、copy、remove……），由后端实现。**没有 `auto`**：探测宿主后自己挑一个，会把
+只有你能权衡的取舍藏起来，所以 `install.sh` 绝不替你决定。
 
-| 后端 | 工作区是什么 | 备注 |
+- `--backend NAME`（`--engine` 是等价别名）为这一次运行指定后端，且不会写回你记住的选择；
+- 不传 `--backend` 时用记住的选择；没有记住的选择、又有终端时，打印下面的清单让你选，
+  选完会记住；
+- 没有终端、也没有记住的选择时，打印同一张清单并**非零退出**，不猜。
+
+`./install.sh backend` 查看记住的选择，`./install.sh backend set NAME` 修改它（存在
+`${XDG_CONFIG_HOME:-~/.config}/agent-workspace/backend`，权限 600）。后端同时记在容器
+状态里，已有容器沿用创建时的后端；`install.sh doctor` 两处都会显示。
+
+| 后端 | 工作区是什么 | 取舍 |
 | --- | --- | --- |
-| `podman` | 你自己 rootless podman 里的一个容器 | 平常就用它；`--systemd=always`、`:z` 挂载 |
-| `docker` | 你 docker 里的一个容器 | systemd 需要 `--privileged --cgroupns=host`，安装器会加 |
-| `incus` | 一个非特权 Incus 实例 | 镜像先导入守护进程；运行期不从 registry 拉任何东西 |
+| `kvm` **推荐** | 一套完整系统：自己的内核、init 与模块 | 需要内核的操作都能做；代价是首次要把镜像做成可启动磁盘，并真实占用内存与磁盘 |
+| `podman` **推荐** | 你自己 rootless podman 里的一个容器 | 最轻最快、无需准备；共享宿主内核，有些操作结构上做不到 |
+| `docker` 备选 | 你 docker 里的一个容器 | 共享宿主内核的代价相同；实例里的 init 需要 `--privileged --cgroupns=host`（安装器会加）；已经用 docker 的环境方便 |
+| `incus` *本版本暂不可选* | 一个非特权 Incus 实例 | 可见且实现仍在；本版本在这套宿主系统上会拒绝选择它 |
+
+清单会按宿主实际情况标注：没装的后端标 `not installed`，`incus` 标
+`not selectable in this version`。
+
+### Incus 可见，但不隐藏也不可选
+
+`installer/lib/backend-incus.sh` 保留在仓库里、保留在清单里、也仍被测试覆盖；被闸门挡住的
+只是**选择**。`--backend incus` 与 `./install.sh backend set incus` 会明确失败，说明本版本
+在这套宿主系统上暂不可选，以及以后如何恢复（换一套宿主系统；闸门是
+`installer/lib/engine.sh` 里的一个变量）。
 
 只有 Incus 后端需要你先在宿主上做一次性准备，而且这一步 `install.sh` 不会替你做
 （装不装 incus、启不启守护进程、存储池与网桥怎么建，都该由宿主决定）：
@@ -381,9 +399,7 @@ sudo systemctl enable --now incus.socket   # 或：sudo systemctl enable --now i
 sudo incus admin init --minimal            # 建默认存储池与 incusbr0 网桥
 ~~~
 
-在那之前 `--backend incus` 会立刻失败并把这两条命令告诉你，而不是创建到一半才报错；
-`auto` 则安静地跳过没响应的守护进程，改用 podman 或 docker。`install.sh` 永远不跑
-`sudo`、不写 `/etc`、也不启动任何守护进程。
+`install.sh` 永远不跑 `sudo`、不写 `/etc`、也不启动任何守护进程。
 
 Incus 工作区有三点值得知道：
 
@@ -413,8 +429,7 @@ digest 真的变了才会重新导入。每个后端的细节与尚未验证的�
   这既是本项目的意义，也是它的边界。
 - `docker` 需要 `--privileged --cgroupns=host` 才能让镜像里的 systemd 当 PID 1；
   安装器会自动加上这些参数，但如果有得选，优先用 `podman`。
-- `incus` 后端需要先做[后端](#后端)里那条一次性宿主准备；在那之前 `auto` 会跳过它。
-  实例是非特权的，容器里的 root 是你的 subuid，而不是宿主 root。
+- `incus` 后端可见但本版本暂不可选，需要先做[后端](#后端)里那条一次性宿主准备。
 
 ## 首次开机
 

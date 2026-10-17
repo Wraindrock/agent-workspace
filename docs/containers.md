@@ -186,7 +186,7 @@ Every TUI action has a subcommand:
 ./install.sh --help
 ```
 
-Global options: `--engine auto|podman|docker`, `--image REF`, `--no-tui`,
+Global options: `--backend NAME` (`--engine` is an alias), `--image REF`, `--no-tui`,
 `--dry-run` (print the engine commands instead of running them), `--no-pull`
 (use the local copy without refreshing its tag), `--yes`, `--quiet`.
 
@@ -259,9 +259,32 @@ wrong, which is what the test suite uses.
 
 `install.sh` calls a fixed set of verbs (create, exec, logs, copy, remove, ...) and a
 backend implements them, so the lifecycle, backup, fork and rollback commands behave
-the same whichever one you use. In `auto` mode the order is **incus, podman,
-docker**; `--backend NAME` (alias `--engine`) pins one, and the choice is stored per
-container so an existing container keeps the backend it was created with.
+the same whichever one you use. **There is no `auto`**: the installer never probes the
+host and picks for you, because that hides a trade-off only you can weigh.
+
+- `--backend NAME` (`--engine` is an alias) chooses for this run; it is never written
+  back over the remembered choice;
+- otherwise the remembered choice is used (`./install.sh backend` shows it,
+  `./install.sh backend set NAME` changes it; the file is
+  `${XDG_CONFIG_HOME:-~/.config}/agent-workspace/backend`, mode 600);
+- with neither, a terminal gets the annotated list and a question (the answer is
+  remembered); without a terminal the same list is printed and the run exits
+  non-zero.
+
+The choice is also stored per container, so an existing container keeps the backend
+it was created with.
+
+| backend | what the workspace is | trade-off |
+| --- | --- | --- |
+| `kvm` (recommended) | a complete system: own kernel, init and modules | kernel-dependent operations work; costs a bootable disk image and real memory/disk |
+| `podman` (recommended) | container in your rootless podman | lightest and fastest, no preparation; shares the host kernel |
+| `docker` | container in your docker | same kernel-sharing trade-off; needs `--privileged --cgroupns=host` for an in-instance init |
+| `incus` (not selectable in this version) | unprivileged Incus instance (daemon-owned) | kept visible, implemented and tested; *selecting* it is gated |
+
+`kvm` is not implemented yet; the list still shows it as the recommendation, marked
+as such. `incus` is the one backend that is present but refused: `--backend incus`
+and `./install.sh backend set incus` fail with an explanation, while `install.sh
+backend`, `install.sh list` and `install.sh doctor` still list it.
 
 | | podman / docker | incus |
 | --- | --- | --- |
@@ -281,16 +304,17 @@ sudo systemctl enable --now incus.socket
 sudo incus admin init --minimal
 ~~~
 
-Until that is done the two messages you can see are:
+Until that is done the messages you can see are:
 
 ~~~text
 backend incus is installed but not usable yet: <what incus said>
 --backend/--engine incus was requested but incus is not installed
+backend incus is not selectable in this version: ... (gate: installer/lib/engine.sh)
 ~~~
 
-The first one is the "installed but not ready" case (the error adds the two commands
-above); the second is `--backend incus` on a host without the package. Plain `auto`
-prints neither: it falls through to podman or docker.
+The first is "installed but not ready" (the error adds the two commands above); the
+second is `--backend incus` on a host without the package; the third is the
+selectability gate, which is what a user on this version sees.
 
 **Verified against a real daemon:** nothing in CI, because the runner has no Incus -
 `tests/incus.sh` drives a fake `incus` that logs its argv, and asserts the pipeline

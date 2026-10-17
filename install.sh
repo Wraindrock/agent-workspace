@@ -106,10 +106,10 @@ declare -A BOOTSTRAP_SHA256_MAIN=(
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="5bb44a22adc2d7f2a75c10a9889330f5fd3f054de0a58e07733a3c4f9331e977"
-  [installer/lib/engine.sh]="ff89db9728a47ffb4dc80569a88ee3d459b5943401a84b84dccab979f7098bfc"
-  [installer/lib/i18n.sh]="8fffc7e062001e294e618daad2c96ea45317d5882172c036cfb4e3f783033acf"
-  [installer/lib/state.sh]="aa2a5f9ca239846a19ff2ac7f1a8713090b19efd82660aa3553f5f14ec56a48f"
+  [installer/lib/commands.sh]="364ecb3bc25a3a8ff5fec59853f94669eb989ea9c6cccdc679819922a7490ed6"
+  [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
+  [installer/lib/i18n.sh]="71d24c00867a272b5f950522a3b4dde7a0b426d398bd38ea91cd5243eb4f41fc"
+  [installer/lib/state.sh]="c0c5062109bc5802972c50278bb1cb845ab44356783409dd1a390362e3a11249"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
@@ -119,10 +119,10 @@ declare -A BOOTSTRAP_SHA256_DEV=(
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="5bb44a22adc2d7f2a75c10a9889330f5fd3f054de0a58e07733a3c4f9331e977"
-  [installer/lib/engine.sh]="ff89db9728a47ffb4dc80569a88ee3d459b5943401a84b84dccab979f7098bfc"
-  [installer/lib/i18n.sh]="8fffc7e062001e294e618daad2c96ea45317d5882172c036cfb4e3f783033acf"
-  [installer/lib/state.sh]="aa2a5f9ca239846a19ff2ac7f1a8713090b19efd82660aa3553f5f14ec56a48f"
+  [installer/lib/commands.sh]="364ecb3bc25a3a8ff5fec59853f94669eb989ea9c6cccdc679819922a7490ed6"
+  [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
+  [installer/lib/i18n.sh]="71d24c00867a272b5f950522a3b4dde7a0b426d398bd38ea91cd5243eb4f41fc"
+  [installer/lib/state.sh]="c0c5062109bc5802972c50278bb1cb845ab44356783409dd1a390362e3a11249"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 BOOTSTRAP_FILES=(
@@ -282,8 +282,11 @@ VOLUME_PREFIX="agent-workspace"
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 AGENT_USER="agent"
 IMAGE=""
-ENGINE_REQUEST="auto"
-BACKEND_REQUEST="auto"
+ENGINE_REQUEST=""
+BACKEND_REQUEST=""
+# 1 when --backend/--engine was given: an explicit name is never written back
+# over the remembered choice and gets its own wording when it is missing.
+BACKEND_EXPLICIT=0
 
 # The agent web UI is published on the host loopback only. These knobs are read
 # by the library functions (installer/lib/commands.sh); see ./install.sh web NAME.
@@ -827,6 +830,7 @@ dispatch() {
       ;;
     upgrade) need_arg; cmd_upgrade "${ARGS[1]}" "${UPGRADE_IMAGE:-${OPT_TO:-}}" ;;
     remove|rm) need_arg; shift_args; remove_many ;;
+    backend) shift_args; cmd_backend "${ARGS[@]:-}" ;;
     doctor) cmd_doctor ;;
     help) usage ;;
     *) die_k err_unknown_command "${cmd}" ;;
@@ -845,7 +849,18 @@ remove_many() {
 # --- entry -----------------------------------------------------------------
 
 require_engine() {
+  # An explicit --backend is answered about *that* backend, even on a host where
+  # nothing (selectable) is installed: "incus is not selectable in this version"
+  # is the honest answer to "--backend incus", not "install a backend".
+  if [[ "${BACKEND_EXPLICIT:-0}" -eq 1 ]]; then
+    resolve_backend_choice
+    ENGINE_REQUEST="$BACKEND_REQUEST"
+    resolve_backend "$BACKEND_REQUEST" "$BACKEND_EXPLICIT"
+    return 0
+  fi
   if [[ -z "$(detect_engines)" ]]; then
+    # Nothing is installed. --dry-run still has to prove it can plan, so it
+    # loads podman's implementation without ever invoking it.
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
       warn_k warn_no_engine_dry
       ENGINE="podman"
@@ -853,16 +868,65 @@ require_engine() {
       backend_load "$ENGINE"
       return 0
     fi
+    # The list is the point here: "install a backend" is the actionable answer,
+    # and it names the two the docs recommend.
+    backend_list
     die_k need_engine
   fi
-  resolve_engine "${BACKEND_REQUEST:-${ENGINE_REQUEST:-auto}}"
+  # Sets BACKEND_REQUEST. It must assign rather than print and be captured: the
+  # list it prints when it has to ask would then end up inside "$(...)" and never
+  # be shown - the exact "refused with no list" this behaviour removes.
+  resolve_backend_choice
+  ENGINE_REQUEST="$BACKEND_REQUEST"
+  resolve_backend "$BACKEND_REQUEST" "$BACKEND_EXPLICIT"
+}
+
+# resolve_backend_choice sets BACKEND_REQUEST to the backend this run will use,
+# in the only order that is honest: an explicit --backend wins and is never
+# written back; then the remembered choice from an earlier run; then, with a
+# terminal, ask and remember the answer. Without a terminal there is nobody to
+# ask, so it prints the same list --backend would have been used to skip, and
+# refuses.
+resolve_backend_choice() {
+  local remembered=""
+  if [[ -n "${BACKEND_REQUEST:-}" ]]; then
+    return 0
+  fi
+  # --dry-run is planning, not doing: it has to work on a host that has not
+  # chosen anything yet, so it assumes podman and says so. A real run never
+  # takes this branch, which is what keeps "no auto" honest.
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    warn_k warn_no_engine_dry
+    BACKEND_REQUEST="podman"
+    return 0
+  fi
+  remembered="$(state_preference)"
+  if [[ -n "$remembered" ]]; then
+    BACKEND_REQUEST="$remembered"
+    return 0
+  fi
+  # ui_interactive, not `[[ -t 0 ]]`: when the installer arrived on stdin (the
+  # documented one-liner) it reopens the terminal on TTY_FD, and that is where
+  # the question has to be asked. A run with neither is the non-interactive case.
+  if ! ui_interactive; then
+    backend_list
+    die_k err_backend_not_chosen
+  fi
+  local asked="" names_csv=""
+  names_csv="$(backend_all_names | paste -sd, -)"
+  backend_list
+  printf '%s\n\n' "$(tf backend_list_prompt "$names_csv")" >&2
+  asked="$(backend_pick)"
+  state_remember "$asked"
+  ok_k backend_pref_set "${asked}" "$(preference_path)"
+  BACKEND_REQUEST="$asked"
 }
 
 parse_args() {
   while [[ "${#}" -gt 0 ]]; do
     case "${1}" in
-      --backend|--engine) BACKEND_REQUEST="${2}"; ENGINE_REQUEST="${2}"; shift 2 ;;
-      --backend=*|--engine=*) BACKEND_REQUEST="${1#*=}"; ENGINE_REQUEST="${1#*=}"; shift ;;
+      --backend|--engine) BACKEND_REQUEST="${2}"; ENGINE_REQUEST="${2}"; BACKEND_EXPLICIT=1; shift 2 ;;
+      --backend=*|--engine=*) BACKEND_REQUEST="${1#*=}"; ENGINE_REQUEST="${1#*=}"; BACKEND_EXPLICIT=1; shift ;;
       --image) IMAGE="${2}"; UPGRADE_IMAGE="${2}"; shift 2 ;;
       --image=*) IMAGE="${1#*=}"; UPGRADE_IMAGE="${1#*=}"; shift ;;
       --no-tui) NO_TUI=1; shift ;;
@@ -981,6 +1045,22 @@ main() {
     require_engine
     load_agents
     tui_home
+    return 0
+  fi
+
+  # An unknown command is a usage error, not a backend question: check it
+  # before require_engine so a typo is reported as a typo even on a host
+  # that has not chosen a backend yet.
+  case "${ARGS[0]:-}" in
+    create|list|ls|start|stop|restart|enter|shell|web|logs|snapshot|snapshots|rollback|recover|fork|upgrade|remove|rm|backend|doctor|help) ;;
+    *) die_k err_unknown_command "${ARGS[0]:-}" ;;
+  esac
+
+  # `backend` is about which backend to use, so it must not need one to run -
+  # least of all on the host that has none, which is exactly where the list and
+  # the remembered choice matter most.
+  if [[ "${ARGS[0]:-}" == "backend" ]]; then
+    dispatch
     return 0
   fi
 

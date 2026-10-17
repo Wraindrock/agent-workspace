@@ -796,9 +796,13 @@ cmd_upgrade() {
 }
 
 cmd_remove() {
-  local name="${1}" id=""
+  local name="${1}" id="" engine_was=""
   require_container "$name"
-  state_engine "$name"
+  # The recorded backend is not needed to leave: removing an instance must still
+  # work when the backend that created it is gone from this host, otherwise a
+  # broken engine leaves state nobody can clean up. When it is present, use it.
+  engine_was="$(state_get "$name" ENGINE)"
+  command -v "$engine_was" >/dev/null 2>&1 && state_engine "$name"
   confirm "$(tf confirm_remove "${name}")" || { warn_k aborted; return 1; }
   if eng_container_exists "$name"; then
     eng_stop "$name"
@@ -835,7 +839,7 @@ cmd_remove() {
 cmd_doctor() {
   local problems=0 names name engine status image volume env_file id archive web mapped
   heading_k head_environment
-  local available
+  local available current_backend
   available="$(detect_engines)"
   if [[ -z "$available" ]]; then
     report_bad_k doc_no_engine
@@ -845,6 +849,18 @@ cmd_doctor() {
       [[ -n "$engine" ]] || continue
       report_ok_k doc_engine "${engine}" "$("$engine" --version 2>/dev/null | head -n 1)"
     done <<<"$available"
+  fi
+  # Every backend, not just the installed ones: a host with nothing installed is
+  # where the list is the answer, and it has to say which ones are gated or not
+  # implemented yet rather than leaving them out.
+  backend_availability
+  current_backend="$(state_preference)"
+  if [[ -n "$current_backend" ]]; then
+    report_ok_k doc_backend_pref "${current_backend}"
+  else
+    # A notice, not a problem: a host that only runs `doctor` before deciding is
+    # healthy, and counting this would make a clean host report a problem.
+    warn_k backend_none_remembered
   fi
   report_ok_k doc_state_dir "${DATA_HOME}"
   report_ok_k doc_conf_dir "${CONF_HOME}/containers"
@@ -937,4 +953,65 @@ cmd_doctor() {
     return 1
   fi
   return 0
+}
+
+# cmd_backend [set NAME] shows or changes the remembered backend choice. It is
+# the only part of the installer that runs without a backend: a host that has
+# none is exactly where "which one do you want?" has to be answerable
+# (docs/backend-model.md: the remembered choice is what prints the list).
+cmd_backend() {
+  local action="${1:-}" name="${2:-}" current=""
+  case "$action" in
+    "") ;;
+    set)
+      if [[ -z "$name" ]]; then
+        die_k err_backend_set_needs_name
+      fi
+      if ! validate_backend "$name"; then
+        die_k err_backend_unknown "${name}"
+      fi
+      if backend_gated "$name"; then
+        die_backend_gated "$name"
+      fi
+      if backend_unimplemented "$name"; then
+        die_backend_unimplemented "$name"
+      fi
+      state_remember "$name"
+      ok_k backend_pref_set "${name}" "$(preference_path)"
+      return 0
+      ;;
+    *) die_k err_backend_subcommand "${action}" ;;
+  esac
+
+  current="$(state_preference)"
+  if [[ -z "$current" ]]; then
+    warn_k backend_none_remembered
+  else
+    msg_k backend_remembered "${current}"
+  fi
+  backend_list
+}
+
+# backend_availability prints, for every backend the model knows, whether it is
+# usable here. doctor prints the same list even when no backend is installed,
+# which is when "which of these would work?" matters most; a backend that is
+# installed but whose daemon is not answering says so rather than reading as a
+# plain "not installed".
+backend_availability() {
+  local name state=""
+  # for, not `while read`, so the list still prints when stdin is /dev/null.
+  for name in $(backend_all_names); do
+    if backend_unimplemented "$name"; then
+      state="$(tf backend_unimplemented)"
+    elif backend_gated "$name"; then
+      state="$(tf backend_gated)"
+    elif ! backend_installed "$name"; then
+      state="$(tf backend_unavailable)"
+    elif ! backend_ready "$name"; then
+      state="$(tf backend_not_ready_state "$(backend_not_ready_hint "$name")")"
+    else
+      state="$(tf backend_available)"
+    fi
+    printf '  %-8s %s\n' "$name" "$state"
+  done
 }

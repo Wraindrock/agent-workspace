@@ -13,8 +13,8 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 ### Added
 
 - `install.sh` now selects its container backend instead of assuming podman:
-  `--backend incus|podman|docker` (alias `--engine`), with `auto` taking the first
-  backend that answers in the order incus, podman, docker. `installer/lib/engine.sh`
+  `--backend NAME` (alias `--engine`), the remaining backend list, the remembered
+  choice and the `backend`/`backend set NAME` subcommands. `installer/lib/engine.sh`
   became a loader over `installer/lib/backend-*.sh`, each implementing the same verb
   set (create, exec, logs, copy, snapshot, remove, ...) so the installer never
   branches on a backend name. A container remembers the backend it was created with.
@@ -25,6 +25,16 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
   daemon setup is a documented one-time host step the installer never performs. New
   `tests/incus.sh` drives a fake `incus` and asserts the verbs, the image pipeline
   and that no credential reaches a command line.
+- `./install.sh backend` shows the remembered backend, `./install.sh backend set NAME`
+  changes it, and the value is stored atomically at
+  `${XDG_CONFIG_HOME:-~/.config}/agent-workspace/backend` with mode 600. The chosen
+  backend is announced on every run, and `install.sh doctor` lists every backend with
+  its availability plus the remembered choice.
+- `install.sh` prints a bilingual backend list with recommendations and trade-offs -
+  `kvm` and `podman` recommended, `docker` the alternative, `incus` visible but not
+  selectable - annotated with what the host actually has ("available", "not
+  installed", "not selectable in this version"). It is printed by the interactive
+  chooser, by the non-interactive refusal, by `./install.sh backend` and by `doctor`.
 - The image now carries this project's default DSH plugin set. New build module
   `45-dsh-plugins` installs the eleven plugins of a full profile from the committed
   `pnpm-lock.yaml` at build time - so an agent container loads them with no network -
@@ -74,6 +84,38 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
   `tests/install.sh` asserts the UI starts at create, comes back after `stop`/`start`
   and `restart`, that a pending first boot is reported, and that an agent without a web
   UI gets no published port.
+
+### Changed
+
+- Backend selection no longer has an `auto` mode. The installer used to probe the
+  host and silently pick the first backend that answered (incus, then podman, then
+  docker), which hid a trade-off only the user can weigh. Now:
+  `--backend NAME` (`--engine` is still an alias) chooses for that run and is never
+  written back over the remembered choice; without it, the remembered choice is used;
+  with neither a remembered choice nor a terminal, `install.sh` prints the backend
+  list and exits non-zero instead of guessing; with a terminal it prints the same
+  list and asks, remembering the answer. The choice is a convenience for a decision
+  the user already made, not detection - a new user is always asked.
+- A missing backend binary now names itself honestly: the remembered choice gets
+  "the remembered backend X is not installed; install it, or choose another with
+  `install.sh backend set NAME`", while an explicit `--backend X` gets
+  "`--backend/--engine X was requested but X is not installed`".
+- The `incus` backend is visible but not selectable in this version. Its
+  implementation, its place in the list and its test stay exactly where they were;
+  the gate is selectability. `--backend incus` and `./install.sh backend set incus`
+  fail with an explanation, while `./install.sh backend`, `list`, `doctor` and
+  `--help` still name it. `AW_ENABLE_BACKEND_INCUS=1` plus removing it from
+  `BACKEND_GATED` in `installer/lib/engine.sh` turns the gate off again on a host
+  that can support it. `docs/backend-model.md` records the decision and the reason.
+- `--dry-run` still plans on a host that has not chosen a backend - it assumes podman
+  and says so - so the contract tests and the documented `--dry-run` examples keep
+  working without a remembered choice. Nothing outside `--dry-run` assumes a backend.
+- A command typo is now reported as an unknown command before any backend question is
+  asked, so `./install.sh frobnicate` prints "unknown command" on a host that has not
+  chosen a backend yet, instead of a misleading "no --backend given".
+- `install.sh --help` documents `--backend`/`--engine` as one entry and gains
+  `./install.sh backend [set NAME]`. `--help` output is unchanged in structure, so
+  the language test's surface comparison still holds.
 
 ### Fixed
 

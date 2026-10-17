@@ -359,10 +359,10 @@ just verify    # build + every container-level test
 just verify-all # the above plus the engine-free contract tests
 ~~~
 
-Requirements: one backend - `podman`, `docker` or `incus` (see
-[Backends](#backends)) - plus `bash` 4.4+ for `install.sh`. Building and linting
-additionally want `just`; the lint uses `shellcheck`, `actionlint` and `python3` +
-`pyyaml` when they are present and skips them when they are not; `tests/smoke.sh`
+Requirements: one backend - `podman`, `docker` or `incus` (see [Backends](#backends));
+`kvm` is the recommended one but is not implemented yet - plus `bash` 4.4+ for
+`install.sh`. Building and linting additionally want `just`; the lint uses
+`shellcheck`, `actionlint` and `python3` + `pyyaml` when they are present and skips them when they are not; `tests/smoke.sh`
 separately needs `jq`. CI installs `actionlint` and `just` explicitly, and relies on
 the runner image for `shellcheck`, `jq` and `python3`. Every pull request runs the
 same eleven test scripts - `tests/lint.sh`, `tests/install.sh`, `tests/smoke.sh`,
@@ -436,17 +436,40 @@ fetched; the `CONTAINER=`/`NAME` declaration-file format, which is machine-reada
 ## Backends
 
 `install.sh` does not talk to an engine directly: it calls a small set of verbs
-(create, exec, logs, copy, remove, ...) and a backend implements them. Pick one with
-`--backend incus|podman|docker` (`--engine` is an accepted alias). The default,
-`auto`, takes the first backend that answers, in the order **incus, podman, docker**.
-The backend is recorded per container, so an existing container keeps the backend it
-was created with; `install.sh doctor` says which one is in use.
+(create, exec, logs, copy, remove, ...) and a backend implements them. **There is
+no `auto`**: probing the host and silently picking one hides a trade-off only you
+can weigh, so `install.sh` never decides for you.
 
-| backend | what the workspace is | notes |
+- `--backend NAME` (`--engine` is an accepted alias) picks one for that run and is
+  never written back over your remembered choice;
+- with no `--backend`, a remembered choice is used; with none recorded and a
+  terminal, the list below is printed and you pick (the answer is remembered);
+- without a terminal and without a recorded choice, the same list is printed and
+  the run **fails** with a non-zero status instead of guessing.
+
+`./install.sh backend` shows the remembered choice and `./install.sh backend set
+NAME` changes it (stored at `${XDG_CONFIG_HOME:-~/.config}/agent-workspace/backend`,
+mode 600). The backend is also recorded per container, so an existing container
+keeps the backend it was created with; `install.sh doctor` shows both.
+
+| backend | what the workspace is | trade-off |
 | --- | --- | --- |
-| `podman` | a container in your rootless podman | the usual choice; `--systemd=always`, `:z` mounts |
-| `docker` | a container in your docker | needs `--privileged --cgroupns=host` for systemd; the installer adds them |
-| `incus` | an unprivileged Incus *instance* | the image is imported into the daemon first; nothing pulls from a registry at run time |
+| `kvm` **recommended** | a complete system: its own kernel, init and modules | operations that need a kernel work; costs building the image into a bootable disk and giving up real memory and disk |
+| `podman` **recommended** | a rootless container in your podman | lightest and fastest, no preparation; shares the host kernel, so some operations are structurally impossible |
+| `docker` alternative | a container in your docker | same kernel-sharing trade-off; needs `--privileged --cgroupns=host` for an in-instance init (the installer adds them); useful where docker is already your tool |
+| `incus` *not selectable in this version* | an unprivileged Incus *instance* | kept visible and implemented; selecting it is refused on this host system for now |
+
+The list is annotated with what the host actually has: a backend that is not
+installed is marked `not installed`, and `incus` is marked `not selectable in this
+version`.
+
+### Incus is visible, not hidden
+
+`installer/lib/backend-incus.sh` stays in the tree, stays in the backend list and
+stays under test; only *selecting* it is gated. `--backend incus` and
+`./install.sh backend set incus` fail with a message saying this host system cannot
+enable it yet, and how it is turned back on (a different host system; the gate is
+one variable in `installer/lib/engine.sh`).
 
 The Incus backend is the only one that needs a host-level step first, and it is the
 one step `install.sh` will not take for you (`incus` has to be installed, its daemon
@@ -458,10 +481,7 @@ sudo systemctl enable --now incus.socket   # or: sudo systemctl enable --now inc
 sudo incus admin init --minimal            # default storage pool + incusbr0 bridge
 ~~~
 
-Until then `--backend incus` fails immediately with those two commands instead of
-failing halfway through a create, and `auto` quietly skips the daemon that is not
-answering and uses podman or docker. `install.sh` never runs `sudo`, never writes
-under `/etc` and never starts a daemon.
+`install.sh` never runs `sudo`, never writes under `/etc` and never starts a daemon.
 
 An Incus workspace differs from a container in three ways worth knowing:
 
@@ -496,9 +516,9 @@ per-backend details and what is still unverified.
   rootless podman or docker; that is the whole point, and it is also the boundary.
 - `docker` needs `--privileged --cgroupns=host` for the image's systemd to be PID 1.
   The installer adds those flags for you; prefer `podman` when you have the choice.
-- The `incus` backend needs the one-time host step in [Backends](#backends) before it
-  can be used; `auto` skips it until then. Its instance is unprivileged, so the
-  container's root is a sub-uid of yours rather than host root.
+- The `incus` backend is visible but not selectable in this version, and needs the
+  one-time host step in [Backends](#backends) before it can be used. Its instance
+  is unprivileged, so the container's root is a sub-uid of yours rather than host root.
 - Booting systemd in a container needs host kernel headroom. The kernel charges
   inotify instances per *user* (`fs.inotify.max_user_instances`, 128 by default),
   a desktop session spends most of that budget, and once it is gone the container
