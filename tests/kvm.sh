@@ -95,6 +95,11 @@ printf 'truncate %s\n' "$*" >>"${FAKE_KVM_LOG:?}"
 : >"${@: -1}"
 FAKE
 
+cat >"$WORK/bin/virt-install" <<'FAKE'
+#!/usr/bin/env bash
+printf 'virt-install %s\n' "$*" >>"${FAKE_KVM_LOG:?}"
+FAKE
+
 cat >"$WORK/bin/xorriso" <<'FAKE'
 #!/usr/bin/env bash
 printf 'xorriso %s\n' "$*" >>"${FAKE_KVM_LOG:?}"
@@ -241,6 +246,21 @@ if run_backend 'declare -F eng_create_persistent >/dev/null && declare -F eng_st
   pass "the backend defines the full verb interface"
 else
   fail "the KVM backend is missing a verb"
+fi
+
+# The suite must not depend on the runner having any of these tools: kvm_probe
+# reads the list from engine.sh and picks them up from the fake PATH, so a new
+# probe dependency fails here until it gets a fake (this is how CI caught
+# virt-install missing on a bare runner).
+probe_tools="$(sed -n 's/^  for bin in \(.*\); do$/\1/p' "$engine" | head -n 1)"
+missing_fakes=""
+for tool in $probe_tools; do
+  [[ -e "$WORK/bin/$tool" ]] || missing_fakes="${missing_fakes} ${tool}"
+done
+if [[ -n "$probe_tools" && -z "$missing_fakes" ]]; then
+  pass "every tool the probe requires has a fake in the test PATH"
+else
+  fail "the probe requires tools without a fake:${missing_fakes:- (could not read the probe list)}"
 fi
 
 if run_engine 'kvm_probe' >/dev/null 2>&1; then
