@@ -244,6 +244,34 @@ scratch      opencode  ephemeral
 `agentCatalog`，既跟随构建，也在读不到 manifest 时保留内置项。完整说明见
 [docs/containers.md](docs/containers.md)。
 
+## 实例内的 root
+
+默认情况下 `agent` 用户在实例里没有 `sudo` 权限。它能不能在实例内变成 root，是一个由你
+随时拨动的开关，而不是创建容器时就定死的东西：
+
+~~~bash
+./install.sh root dsh-box status   # 默认。以实测为准，不是看文件
+./install.sh root dsh-box on       # 写 /etc/sudoers.d/agent-workspace，NOPASSWD，权限 0440
+./install.sh root dsh-box off      # 删掉规则、轮换密码并锁定账号
+~~~
+
+`on` 立即生效：`sudo` 每次调用都会重读 `sudoers.d`，所以 agent 下一次 `sudo` 就能用，
+不用重启、也不用重新登录。规则只授予 `agent` 用户；它先写到临时文件、用 `visudo -cf`
+校验通过后才会生效——坏掉的 sudoers 文件绝不会被装上。两个方向都是幂等的：重复你已经
+是的那个词，只会重新实测并说明“已经是了”，不改动任何东西。`status` 以 agent 身份执行
+`sudo -n true`，并单独报告规则文件是否存在，所以“文件在”和“sudo 真的放行了”不会被混为
+一谈。实例已停止时它无法回答，会直接说明，而不是猜一个结果。
+
+`on` 还会给 agent 账号设一个新随机密码，并存到宿主机上的
+`~/.config/agent-workspace/credentials/<name>.root`（权限 `600`），和容器凭据放在一起
+——这是宿主机为这个开关唯一保留的东西，也是你在实例里以 agent 身份登录时要用的那个值。
+它永远不会被打印，只打印路径。`off` 会删掉规则，把该密码轮换成一个谁都不保存的值，
+锁定账号、删除宿主侧文件，然后实测 `sudo -n true` 确实失败。
+
+`off` **不会**收回已经在运行的东西：agent 此前以 root 启动的进程会一直保留这个权限，直到
+它退出。另外，实例内的 root 与 agent 本身属于同一个信任域——它是容器里的 root，永远不是
+宿主机的 root；这条边界在 [SECURITY.md](SECURITY.md) 里写得很清楚。
+
 ## 在宿主机打开 agent 的 web UI
 
 DeepSeek Harness 自带 web UI。容器只把它绑在自己的回环上，安装器把它发布到你的回环

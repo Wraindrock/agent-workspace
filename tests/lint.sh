@@ -206,7 +206,7 @@ else
 fi
 
 echo "installer structure"
-for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor" "cmd_web"; do
+for symbol in "create_container_from" "cmd_list" "cmd_enter" "cmd_snapshot" "cmd_rollback" "cmd_recover" "cmd_fork" "cmd_upgrade" "cmd_remove" "cmd_doctor" "cmd_web" "cmd_root"; do
   if grep -qE "^${symbol}\(\) \{" installer/lib/commands.sh; then
     pass "installer/lib/commands.sh defines ${symbol}"
   else

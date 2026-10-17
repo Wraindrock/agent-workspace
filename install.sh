@@ -106,10 +106,10 @@ declare -A BOOTSTRAP_SHA256_MAIN=(
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="364ecb3bc25a3a8ff5fec59853f94669eb989ea9c6cccdc679819922a7490ed6"
+  [installer/lib/commands.sh]="2c4513a56855430664ea67da883c35778cbac79a0c3c181b93a5c62b17026bfb"
   [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
-  [installer/lib/i18n.sh]="71d24c00867a272b5f950522a3b4dde7a0b426d398bd38ea91cd5243eb4f41fc"
-  [installer/lib/state.sh]="c0c5062109bc5802972c50278bb1cb845ab44356783409dd1a390362e3a11249"
+  [installer/lib/i18n.sh]="817d79ddfc34ee1ce3f446f7a0762a93d6272384598f72fee0293925eeffcd30"
+  [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 declare -A BOOTSTRAP_SHA256_DEV=(
@@ -119,10 +119,10 @@ declare -A BOOTSTRAP_SHA256_DEV=(
   [installer/lib/backend-docker.sh]="913252b9b0f458852c1341335279ba4eb1cff9d298396e0a3a5b2b0837859d0e"
   [installer/lib/backend-incus.sh]="06a21ebc9d7438f34ad9d102e1bdfee2ac39f054bc820966167c795776e2eed3"
   [installer/lib/backend-podman.sh]="840eba3f6c8667657e97965c8bf1adf9842bb8e187acf32f1abc27ce63310c20"
-  [installer/lib/commands.sh]="364ecb3bc25a3a8ff5fec59853f94669eb989ea9c6cccdc679819922a7490ed6"
+  [installer/lib/commands.sh]="2c4513a56855430664ea67da883c35778cbac79a0c3c181b93a5c62b17026bfb"
   [installer/lib/engine.sh]="76072e2612cd0a92e9c217eb0ac2105f032c2ac71d8e4dc272cc2adcaa6b4415"
-  [installer/lib/i18n.sh]="71d24c00867a272b5f950522a3b4dde7a0b426d398bd38ea91cd5243eb4f41fc"
-  [installer/lib/state.sh]="c0c5062109bc5802972c50278bb1cb845ab44356783409dd1a390362e3a11249"
+  [installer/lib/i18n.sh]="817d79ddfc34ee1ce3f446f7a0762a93d6272384598f72fee0293925eeffcd30"
+  [installer/lib/state.sh]="260976aadbe7889f770bdb0f11c623c6d0aa00d16c80846d318c2ec0512afdea"
   [installer/lib/ui.sh]="4c67debcddc9c8cc43df9f1b8721adc19c58675a0c2376dacef094eef69f31dd"
 )
 BOOTSTRAP_FILES=(
@@ -831,6 +831,7 @@ dispatch() {
     remove|rm) need_arg; shift_args; remove_many ;;
     backend) shift_args; cmd_backend "${ARGS[@]:-}" ;;
     doctor) cmd_doctor ;;
+    root) need_arg; cmd_root "${ARGS[1]}" "${ARGS[2]:-status}" ;;
     help) usage ;;
     *) die_k err_unknown_command "${cmd}" ;;
   esac
@@ -1049,7 +1050,7 @@ main() {
   # before require_engine so a typo is reported as a typo even on a host
   # that has not chosen a backend yet.
   case "${ARGS[0]:-}" in
-    create|list|ls|start|stop|restart|enter|shell|web|logs|snapshot|snapshots|rollback|recover|fork|upgrade|remove|rm|backend|doctor|help) ;;
+    create|list|ls|start|stop|restart|enter|shell|web|logs|snapshot|snapshots|rollback|recover|fork|upgrade|remove|rm|backend|doctor|root|help) ;;
     *) die_k err_unknown_command "${ARGS[0]:-}" ;;
   esac
 

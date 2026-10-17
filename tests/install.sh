@@ -1016,6 +1016,137 @@ contains "the missing engine is reported when there is none" "neither incus, pod
 contains "the no-engine refusal still prints the backend list" "kvm" "$RUN_OUT"
 
 # =========================================================================
+# =========================================================================
+echo "root inside the instance"
+
+# The switch is a live boolean, not a one-time grant: everything asserted here is
+# observed through the fake container's files and the argv the installer sent it,
+# never by reading the host state alone.
+root_creds() { printf '%s/credentials/%s.root' "$CONF_DIR" "$1"; }
+root_sudoers() { printf '%s/containers/%s/etc/sudoers.d/agent-workspace' "$FAKE_ENGINE_STATE" "$1"; }
+
+run create --agent dsh --name rootbox --yes
+is "creating the root test container exits 0" 0 "$RUN_STATUS"
+
+run root rootbox
+is "root with no third word defaults to status" 0 "$RUN_STATUS"
+contains "a fresh instance reports root off" "in-instance root for rootbox: OFF" "$RUN_OUT"
+contains "status reports the sudoers file is absent" "/etc/sudoers.d/agent-workspace is absent" "$RUN_OUT"
+missing "status writes no credentials" "$(root_creds rootbox)"
+
+run root rootbox on
+is "root on exits 0" 0 "$RUN_STATUS"
+exists "on writes the rule file" "$(root_sudoers rootbox)"
+is "the rule file is mode 0440" 440 "$(stat -c '%a' "$(root_sudoers rootbox)" 2>/dev/null)"
+contains "the rule grants passwordless sudo" "agent ALL=(ALL) NOPASSWD: ALL" \
+  "$(cat "$(root_sudoers rootbox)" 2>/dev/null || true)"
+contains "the candidate rule is validated before it goes live" \
+  "visudo -cf /etc/sudoers.d/.agent-workspace.tmp" "$(engine_log)"
+contains "the validated rule is installed with mode 0440" \
+  "install -m 0440 /etc/sudoers.d/.agent-workspace.tmp /etc/sudoers.d/agent-workspace" "$(engine_log)"
+contains "on verifies the live probe" "sudo -n true" "$(engine_log)"
+exists "on writes the host credentials file" "$(root_creds rootbox)"
+is "the credentials file is mode 600" 600 "$(stat -c '%a' "$(root_creds rootbox)" 2>/dev/null)"
+contains "on names the credentials file" "$(root_creds rootbox)" "$RUN_OUT"
+ROOT_PASSWORD="$(cat "$(root_creds rootbox)" 2>/dev/null || true)"
+if [[ "$ROOT_PASSWORD" =~ ^[0-9a-f]{32}$ ]]; then
+  pass "the credentials file holds 32 hex characters"
+else
+  fail "the credentials file should hold 32 hex characters, got [${ROOT_PASSWORD}]"
+fi
+lacks "the password never reaches stdout or stderr" "$ROOT_PASSWORD" "$RUN_OUT"
+lacks "the password never reaches the engine log" "$ROOT_PASSWORD" "$(engine_log)"
+
+run root rootbox status
+is "status exits 0 when on" 0 "$RUN_STATUS"
+contains "status follows the live probe when on" "in-instance root for rootbox: ON" "$RUN_OUT"
+contains "status reports the sudoers file is present" "/etc/sudoers.d/agent-workspace is present" "$RUN_OUT"
+
+# Idempotent in the on direction: re-verify, change nothing. "Change nothing" is
+# asserted by the password staying identical and no second chpasswd being sent.
+CHPASSWD_BEFORE="$(printf '%s' "$(engine_log)" | grep -c chpasswd || true)"
+run root rootbox on
+is "on is idempotent" 0 "$RUN_STATUS"
+contains "an already-on instance says so" "already on" "$RUN_OUT"
+is "already-on leaves the password file alone" "$ROOT_PASSWORD" \
+  "$(cat "$(root_creds rootbox)" 2>/dev/null || true)"
+is "already-on sets no new password" "$CHPASSWD_BEFORE" \
+  "$(printf '%s' "$(engine_log)" | grep -c chpasswd || true)"
+
+run root rootbox off
+is "root off exits 0" 0 "$RUN_STATUS"
+contains "off reports the instance is off" "in-instance root for rootbox is now off" "$RUN_OUT"
+missing "off removes the rule file" "$(root_sudoers rootbox)"
+missing "off removes the host credentials file" "$(root_creds rootbox)"
+contains "off reports how many credential files it removed" \
+  "removed 1 host-side credential file(s)" "$RUN_OUT"
+contains "off says running root processes are not revoked" \
+  "already-running root processes are not revoked" "$RUN_OUT"
+contains "off locks the agent account after rotating its password" "passwd -l agent" "$(engine_log)"
+
+run root rootbox status
+is "status exits 0 when off" 0 "$RUN_STATUS"
+contains "status follows the live probe when off" "in-instance root for rootbox: OFF" "$RUN_OUT"
+contains "status reports the rule file is gone" "/etc/sudoers.d/agent-workspace is absent" "$RUN_OUT"
+
+CHPASSWD_BEFORE="$(printf '%s' "$(engine_log)" | grep -c chpasswd || true)"
+run root rootbox off
+is "off is idempotent" 0 "$RUN_STATUS"
+contains "an already-off instance says so" "already off" "$RUN_OUT"
+contains "already-off removes no credential files" "removed 0 host-side credential file(s)" "$RUN_OUT"
+is "already-off sets no new password" "$CHPASSWD_BEFORE" \
+  "$(printf '%s' "$(engine_log)" | grep -c chpasswd || true)"
+
+# A dry run plans the steps and stops: no rule, no password, no secret.
+run root rootbox on --dry-run
+is "root dry run exits 0" 0 "$RUN_STATUS"
+contains "root dry run prints the engine commands" "dry-run: podman exec rootbox" "$RUN_OUT"
+missing "root dry run writes no rule" "$(root_sudoers rootbox)"
+missing "root dry run writes no credentials" "$(root_creds rootbox)"
+
+# A sudoers candidate that does not validate must never become live, and must not
+# leave a password behind: the failure is before the rule is installed.
+run create --agent dsh --name rootbad --yes
+RUN_OUT="$(env PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+  XDG_DATA_HOME="$XDG_DATA_HOME" WORKSPACE_ROOT="$WORKSPACE_ROOT" \
+  FAKE_ENGINE_STATE="$FAKE_ENGINE_STATE" DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+  WEB_PORT_BASE="$WEB_PORT_BASE" FAKE_ENGINE_BAD_SUDOERS=1 \
+  bash "$INSTALLER" root rootbad on 2>&1 </dev/null)"
+RUN_STATUS=$?
+is "a sudoers rule that fails visudo is refused" 1 "$RUN_STATUS"
+contains "the refusal names visudo" "visudo -cf" "$RUN_OUT"
+missing "a rejected rule never becomes live" "$(root_sudoers rootbad)"
+missing "a rejected rule writes no credentials" "$(root_creds rootbad)"
+
+run root rootbox sideways
+is "an unknown root mode fails" 1 "$RUN_STATUS"
+contains "the valid modes are named" "on, off, status" "$RUN_OUT"
+run root nosuchroot status
+is "an unknown instance fails" 1 "$RUN_STATUS"
+contains "the unknown instance is reported" "no container named 'nosuchroot'" "$RUN_OUT"
+
+# A stopped instance cannot answer, and the command must say why and how to start
+# it instead of guessing from what it can see on the host.
+run stop rootbox
+run root rootbox on
+is "on refuses a stopped instance" 1 "$RUN_STATUS"
+contains "the refusal names the start command" "install.sh start rootbox" "$RUN_OUT"
+run root rootbox status
+is "status refuses to guess about a stopped instance" 1 "$RUN_STATUS"
+contains "status explains it cannot verify while stopped" "cannot be verified" "$RUN_OUT"
+contains "status explains why that is" "sudo's rules are read inside the instance" "$RUN_OUT"
+lacks "status does not report on or off when it could not look" \
+  "in-instance root for rootbox:" "$RUN_OUT"
+run start rootbox
+is "the root test container is running again" 0 "$RUN_STATUS"
+
+# The feature is backend-neutral: it drives the exec verbs, never a backend binary.
+root_region="$(sed -n '/^# --- in-instance root/,$p' "$ROOT/installer/lib/commands.sh")"
+contains "the root feature goes through the exec verbs" "eng_exec_test" "$root_region"
+lacks "the root feature never names podman" "podman" "$root_region"
+lacks "the root feature never names docker" "docker" "$root_region"
+lacks "the root feature never names incus" "incus" "$root_region"
+
 echo "create (container that does not stay up)"
 # A container that exits on start used to be reported as created, which is how a
 # dangling /home and an image without systemd as its command reached a release.

@@ -329,6 +329,7 @@ case "$cmd" in
     ;;
   exec)
     printf 'fake exec: %s\n' "$*" >>"$STATE/log"
+    exec_argv="$*"
     name=""; script=""
     while [[ "$#" -gt 0 ]]; do
       case "$1" in
@@ -338,6 +339,68 @@ case "$cmd" in
       esac
     done
     dir="$(container_dir "$name")"
+    etc_sudoers="${dir}/etc/sudoers.d"
+    # The in-instance root switch: /etc/sudoers.d/agent-workspace exists inside
+    # the fake container exactly when the installer's steps created it, and
+    # `sudo -n true` follows its presence, so a live probe cannot pass on a
+    # promise the file does not back.
+    case "$exec_argv" in
+      *"sudo -n true"*)
+        [[ -f "${etc_sudoers}/agent-workspace" ]] && exit 0
+        exit 1
+        ;;
+      *"test -f /etc/sudoers.d/agent-workspace"*)
+        [[ -f "${etc_sudoers}/agent-workspace" ]] && exit 0
+        exit 1
+        ;;
+      *"install -d -m 0750 /etc/sudoers.d"*)
+        mkdir -p "${etc_sudoers}"
+        chmod 0750 "${etc_sudoers}"
+        exit 0
+        ;;
+      *"cat > /etc/sudoers.d/.agent-workspace.tmp"*)
+        mkdir -p "${etc_sudoers}"
+        cat >"${etc_sudoers}/.agent-workspace.tmp"
+        exit 0
+        ;;
+      *"visudo -cf /etc/sudoers.d/.agent-workspace.tmp"*)
+        if [[ "${FAKE_ENGINE_BAD_SUDOERS:-0}" == "1" ]]; then
+          printf 'visudo: syntax error\n' >&2
+          exit 1
+        fi
+        if [[ ! -s "${etc_sudoers}/.agent-workspace.tmp" ]]; then
+          printf 'visudo: no such file\n' >&2
+          exit 1
+        fi
+        exit 0
+        ;;
+      *"install -m 0440 /etc/sudoers.d/.agent-workspace.tmp /etc/sudoers.d/agent-workspace"*)
+        install -m 0440 "${etc_sudoers}/.agent-workspace.tmp" "${etc_sudoers}/agent-workspace" || exit 1
+        exit 0
+        ;;
+      *"rm -f /etc/sudoers.d/.agent-workspace.tmp"*)
+        rm -f "${etc_sudoers}/.agent-workspace.tmp"
+        exit 0
+        ;;
+      *"rm -f /etc/sudoers.d/agent-workspace"*)
+        rm -f "${etc_sudoers}/agent-workspace"
+        exit 0
+        ;;
+      *chpasswd*)
+        # chpasswd reads user:password from stdin; the fake discards it, so a
+        # credential never reaches its log.
+        cat >/dev/null
+        exit 0
+        ;;
+      *"passwd -l"*)
+        : >"${dir}/password-locked"
+        exit 0
+        ;;
+      *"passwd -u"*)
+        rm -f "${dir}/password-locked"
+        exit 0
+        ;;
+    esac
     case "$script" in
       *grep\ -o*)
         [[ -f "${dir}/webtoken" ]] && cat "${dir}/webtoken"

@@ -1015,3 +1015,191 @@ backend_availability() {
     printf '  %-8s %s\n' "$name" "$state"
   done
 }
+
+# --- in-instance root ------------------------------------------------------
+#
+# Whether the agent user may become root inside the instance is a switch the
+# user flips at any time, not something fixed at create time. Its state lives
+# inside the instance: /etc/sudoers.d/agent-workspace is what was asked for and
+# the sudo probe is what is actually granted, so this command reports both and
+# never infers one from the other. The host keeps only the password a human may
+# need to log in with, next to the other credentials.
+#
+# The switch is read by running `sudo -n true` as the agent inside the running
+# instance. Reading the sudoers file is not evidence: it can be shadowed,
+# edited or stale, and an instance that is stopped cannot answer at all.
+
+root_sudoers_path() { printf '%s' "/etc/sudoers.d/agent-workspace"; }
+root_sudoers_tmp()  { printf '%s' "/etc/sudoers.d/.agent-workspace.tmp"; }
+root_rule_line()    { printf '%s ALL=(ALL) NOPASSWD: ALL' "${AGENT_USER}"; }
+
+# in_instance_root_live NAME: succeeds when `sudo -n true` succeeds as the agent.
+# `su` rather than an exec-user flag keeps this backend-neutral and matches what
+# a real login would experience (including a locked account).
+in_instance_root_live() {
+  local name="${1}"
+  eng_exec_test "$name" su -s /bin/sh -c 'sudo -n true' "${AGENT_USER}"
+}
+
+in_instance_sudoers_present() {
+  local name="${1}"
+  eng_exec_test "$name" test -f "$(root_sudoers_path)"
+}
+
+# in_instance_password NAME PASSWORD: chpasswd reads user:password from stdin,
+# so the password never appears in the engine command line, in a log or in the
+# process list.
+in_instance_password() {
+  local name="${1}" password="${2}"
+  printf '%s:%s\n' "${AGENT_USER}" "$password" | eng_exec_test "$name" chpasswd
+}
+
+# root_random_password: 32 hex characters (128 bits) straight from /dev/urandom.
+root_random_password() {
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+# write_root_credentials NAME PASSWORD: keep the in-instance root password
+# host-side, 0600, in the credentials tree. Written to a same-directory temp
+# file and renamed, like the remembered backend, so a reader never sees half.
+write_root_credentials() {
+  local name="${1}" password="${2}" path dir tmp
+  path="$(root_credentials_path "$name")"
+  dir="$(dirname "$path")"
+  install -d -m 0700 "$dir"
+  tmp="$(mktemp "${dir}/.root.XXXXXX")"
+  chmod 0600 "$tmp"
+  printf '%s\n' "$password" >"$tmp"
+  mv "$tmp" "$path"
+}
+
+# remove_root_credentials NAME: succeeds when a file was actually removed, so
+# the caller can report a count instead of a vague "done".
+remove_root_credentials() {
+  local path
+  path="$(root_credentials_path "$1")"
+  [[ -f "$path" ]] || return 1
+  rm -f "$path"
+}
+
+# root_plan NAME on|off: the dry-run narrative. A dry run must not write a real
+# password file or pretend the live probe answered, so the steps print instead
+# of running.
+root_plan() {
+  local name="${1}" mode="${2}"
+  if [[ "$mode" == on ]]; then
+    eng_exec_test "$name" install -d -m 0750 /etc/sudoers.d
+    printf '%s\n' "$(root_rule_line)" | eng_exec_test "$name" /bin/sh -c "cat > $(root_sudoers_tmp)"
+    eng_exec_test "$name" visudo -cf "$(root_sudoers_tmp)"
+    eng_exec_test "$name" install -m 0440 "$(root_sudoers_tmp)" "$(root_sudoers_path)"
+    eng_exec_test "$name" rm -f "$(root_sudoers_tmp)"
+    printf 'pw\n' | eng_exec_test "$name" chpasswd
+    eng_exec_test "$name" passwd -u "${AGENT_USER}"
+  else
+    eng_exec_test "$name" rm -f "$(root_sudoers_path)"
+    printf 'pw\n' | eng_exec_test "$name" chpasswd
+    eng_exec_test "$name" passwd -l "${AGENT_USER}"
+  fi
+  msg_k root_plan "$name"
+}
+
+root_status() {
+  local name="${1}" live=0 present=0
+  state_engine "$name"
+  if ! eng_container_running "$name"; then
+    die_k root_status_stopped "$name" "install.sh start $name"
+  fi
+  if in_instance_root_live "$name"; then live=1; fi
+  if in_instance_sudoers_present "$name"; then present=1; fi
+  if [[ "$live" -eq 1 ]]; then
+    ok_k root_status_on "$name" "${AGENT_USER}"
+  else
+    ok_k root_status_off "$name" "${AGENT_USER}"
+  fi
+  if [[ "$present" -eq 1 ]]; then
+    msg_k root_sudoers_present
+  else
+    msg_k root_sudoers_absent
+  fi
+  # The probe and the file can disagree; say so and name the command that
+  # repairs each direction instead of silently picking a winner.
+  if [[ "$live" -eq 1 && "$present" -eq 0 ]]; then
+    warn_k root_status_mismatch_on "$name"
+  elif [[ "$live" -eq 0 && "$present" -eq 1 ]]; then
+    warn_k root_status_mismatch_off "$name"
+  fi
+}
+
+root_on() {
+  local name="${1}" password=""
+  state_engine "$name"
+  eng_container_running "$name" || die_k err_start_it "$name" "$name"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    root_plan "$name" on
+    return 0
+  fi
+  if in_instance_root_live "$name" && in_instance_sudoers_present "$name"; then
+    ok_k root_already_on "$name"
+    return 0
+  fi
+  eng_exec_test "$name" install -d -m 0750 /etc/sudoers.d \
+    || die_k root_exec_failed "$name" "$name"
+  printf '%s\n' "$(root_rule_line)" | eng_exec_test "$name" /bin/sh -c "cat > $(root_sudoers_tmp)" \
+    || die_k root_exec_failed "$name" "$name"
+  if ! eng_exec_test "$name" visudo -cf "$(root_sudoers_tmp)"; then
+    # A broken rule must never become live: drop the candidate and stop.
+    eng_exec_test "$name" rm -f "$(root_sudoers_tmp)" || true
+    die_k root_sudoers_invalid "$name" "$name"
+  fi
+  eng_exec_test "$name" install -m 0440 "$(root_sudoers_tmp)" "$(root_sudoers_path)" \
+    || die_k root_exec_failed "$name" "$name"
+  eng_exec_test "$name" rm -f "$(root_sudoers_tmp)" || true
+  password="$(root_random_password)"
+  in_instance_password "$name" "$password" || die_k root_password_failed "$name" "$name"
+  # chpasswd rewrites the password field, which clears a lock; unlock anyway so
+  # the account is usable for a real login, not only for passwordless sudo.
+  eng_exec_test "$name" passwd -u "${AGENT_USER}" || true
+  write_root_credentials "$name" "$password"
+  if ! in_instance_root_live "$name"; then
+    die_k root_verify_failed "$name" "$name"
+  fi
+  ok_k root_on_done "$name" "$(root_credentials_path "$name")"
+}
+
+root_off() {
+  local name="${1}" password="" removed=0
+  state_engine "$name"
+  eng_container_running "$name" || die_k err_start_it "$name" "$name"
+  if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+    root_plan "$name" off
+    return 0
+  fi
+  if ! in_instance_root_live "$name" && ! in_instance_sudoers_present "$name"; then
+    if remove_root_credentials "$name"; then removed=1; fi
+    ok_k root_already_off "$name"
+    msg_k root_creds_removed "$removed"
+    return 0
+  fi
+  eng_exec_test "$name" rm -f "$(root_sudoers_path)" || die_k root_exec_failed "$name" "$name"
+  password="$(root_random_password)"
+  in_instance_password "$name" "$password" || die_k root_password_failed "$name" "$name"
+  eng_exec_test "$name" passwd -l "${AGENT_USER}" || true
+  if remove_root_credentials "$name"; then removed=1; fi
+  if in_instance_root_live "$name"; then
+    die_k root_off_failed "$name" "$name"
+  fi
+  ok_k root_off_done "$name"
+  msg_k root_creds_removed "$removed"
+  msg_k root_off_running_note
+}
+
+cmd_root() {
+  local name="${1:-}" action="${2:-status}"
+  require_container "$name"
+  case "$action" in
+    on) root_on "$name" ;;
+    off) root_off "$name" ;;
+    status) root_status "$name" ;;
+    *) die_k root_choice "$action" ;;
+  esac
+}

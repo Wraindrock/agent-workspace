@@ -12,6 +12,18 @@ for the *declarative surface* - `config/*.conf`, `image.env`, `install.sh`, and 
 
 ### Added
 
+- `./install.sh root <name> on|off|status` makes root inside the instance a live,
+  user-controlled switch instead of something fixed when the container is created.
+  `on` writes `/etc/sudoers.d/agent-workspace` (`NOPASSWD`, mode 0440) only after
+  `visudo -cf` accepts it on a temporary file, gives the agent account a fresh random
+  password and stores it host-side at
+  `${XDG_CONFIG_HOME:-~/.config}/agent-workspace/credentials/<name>.root` (mode 600,
+  never printed); `off` removes the rule, rotates that password to a value written
+  nowhere, locks the account, deletes the host file and reports how many files it
+  removed. `status` is the default word and runs `sudo -n true` as the agent instead of
+  trusting the file's presence; a stopped instance is refused with the start command.
+  Both directions are idempotent. The command is backend-neutral and only uses the
+  exec verbs. Already-running root processes are not revoked by `off`.
 - `install.sh` now selects its container backend instead of assuming podman:
   `--backend NAME` (alias `--engine`), the remaining backend list, the remembered
   choice and the `backend`/`backend set NAME` subcommands. `installer/lib/engine.sh`

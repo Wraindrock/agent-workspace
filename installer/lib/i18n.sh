@@ -325,6 +325,27 @@ t() {
         prompt_workspace)     value="挂载到 /workspace 的宿主目录" ;;
         mode_persistent_desc) value="persistent —— 一个持续运行的系统；状态保存在命名卷里" ;;
         mode_ephemeral_desc)  value="ephemeral —— 运行一次智能体，退出后容器即被删除" ;;
+        # --- in-instance root ---
+        root_status_stopped) value="实例 %s 已停止，无法验证实例内的 root：sudo 的规则要在实例里读取，而实例停止时里面什么也执行不了。请先启动它：%s" ;;
+        root_status_on)      value="%s 的实例内 root：已开启（实测：以 %s 身份执行 sudo -n true 成功）" ;;
+        root_status_off)     value="%s 的实例内 root：已关闭（实测：以 %s 身份执行 sudo -n true 失败）" ;;
+        root_sudoers_present) value="/etc/sudoers.d/agent-workspace 存在" ;;
+        root_sudoers_absent) value="/etc/sudoers.d/agent-workspace 不存在" ;;
+        root_status_mismatch_on) value="实测 sudo 已放行，但规则文件不在。补装规则：install.sh root %s on" ;;
+        root_status_mismatch_off) value="规则文件在，但 sudo 没有放行。清理：install.sh root %s off" ;;
+        root_already_on)     value="%s 的实例内 root 已经是开启状态；已重新实测，未做任何改动" ;;
+        root_on_done)        value="%s 的实例内 root 已开启（实测 sudo -n true 成功）；密码文件：%s" ;;
+        root_already_off)    value="%s 的实例内 root 已经是关闭状态；已重新实测，未做任何改动" ;;
+        root_off_done)       value="%s 的实例内 root 已关闭（实测 sudo -n true 失败）" ;;
+        root_creds_removed)  value="已删除宿主侧凭据文件 %s 个" ;;
+        root_off_running_note) value="已经以 root 运行的进程不会被收回：智能体此前启动的 root 进程会一直保留该权限，直到它退出" ;;
+        root_choice)         value="root 的模式 %s 无效（可选：on、off、status）" ;;
+        root_exec_failed)    value="在 %s 里开启实例内 root 的某一步失败了，可能只改了一半。请运行 install.sh root %s off 清理后重试" ;;
+        root_sudoers_invalid) value="sudoers 规则在 %s 里没有通过 visudo -cf 校验，因此没有安装任何规则。请运行 install.sh root %s on 重试" ;;
+        root_password_failed) value="无法在 %s 里给智能体用户设置新密码。请运行 install.sh root %s off 清理" ;;
+        root_verify_failed)  value="装好规则后，%s 里的 sudo -n true 仍然失败。请运行 install.sh root %s status 查看实际状态" ;;
+        root_off_failed)     value="删除规则后，%s 里的 sudo -n true 仍然成功。请再次运行 install.sh root %s off" ;;
+        root_plan)           value="dry run：%s 内部未做任何改动，以上只打印将要执行的步骤" ;;
         *) value="" ;;
       esac
       ;;
@@ -581,6 +602,27 @@ t() {
         prompt_workspace)     value="Host directory mounted at /workspace" ;;
         mode_persistent_desc) value="persistent — a running system; state lives in a named volume" ;;
         mode_ephemeral_desc)  value="ephemeral — run the agent once, the container is removed on exit" ;;
+        # --- in-instance root ---
+        root_status_stopped) value="instance %s is stopped, so in-instance root cannot be verified: sudo's rules are read inside the instance, and nothing can run there while it is stopped. Start it with: %s" ;;
+        root_status_on)      value="in-instance root for %s: ON (verified live: sudo -n true succeeds as %s)" ;;
+        root_status_off)     value="in-instance root for %s: OFF (verified live: sudo -n true fails as %s)" ;;
+        root_sudoers_present) value="/etc/sudoers.d/agent-workspace is present" ;;
+        root_sudoers_absent) value="/etc/sudoers.d/agent-workspace is absent" ;;
+        root_status_mismatch_on) value="the live probe grants sudo but the rule file is missing; install it with: install.sh root %s on" ;;
+        root_status_mismatch_off) value="the rule file exists but sudo does not grant it; clean up with: install.sh root %s off" ;;
+        root_already_on)     value="in-instance root for %s is already on; re-verified live, nothing was changed" ;;
+        root_on_done)        value="in-instance root for %s is now on (verified live: sudo -n true succeeds); password file: %s" ;;
+        root_already_off)    value="in-instance root for %s is already off; re-verified live, nothing was changed" ;;
+        root_off_done)       value="in-instance root for %s is now off (verified live: sudo -n true fails)" ;;
+        root_creds_removed)  value="removed %s host-side credential file(s)" ;;
+        root_off_running_note) value="already-running root processes are not revoked: a root process the agent started keeps that privilege until it exits" ;;
+        root_choice)         value="unknown mode for root: %s (valid choices: on, off, status)" ;;
+        root_exec_failed)    value="a step that turns root on inside %s failed, so it may be half applied; run install.sh root %s off to clean up, then retry" ;;
+        root_sudoers_invalid) value="the sudoers rule failed visudo -cf inside %s, so nothing was installed; run install.sh root %s on to retry" ;;
+        root_password_failed) value="could not set a new password for the agent user inside %s; run install.sh root %s off to clean up" ;;
+        root_verify_failed)  value="sudo -n true still fails inside %s after installing the rule; run install.sh root %s status to see what is live" ;;
+        root_off_failed)     value="sudo -n true still succeeds inside %s after removing the rule; run install.sh root %s off again" ;;
+        root_plan)           value="dry run: nothing inside %s was changed; the steps that would run are printed above" ;;
         *) value="" ;;
       esac
       ;;
@@ -650,6 +692,9 @@ agent-workspace installer（安装器）
                                查看或修改记住的后端（不会自动替你选）
   ./install.sh doctor [--strict]
                                检查引擎、容器、卷与凭据
+  ./install.sh root NAME [on|off|status]
+                               查看或切换实例内的 root（默认关闭；省略第三个词
+                               时按 status 处理）
 
 create 选项
   --agent NAME        要运行的智能体（见：install.sh create --help-agents）
@@ -687,6 +732,7 @@ create 选项
 宿主路径
   容器与快照：  $XDG_DATA_HOME（默认 ~/.local/share）/agent-workspace
   凭据（权限 600）：  $XDG_CONFIG_HOME（默认 ~/.config）/agent-workspace/containers
+  实例内 root 的密码（权限 600）：  $XDG_CONFIG_HOME（默认 ~/.config）/agent-workspace/credentials
 USAGE
       ;;
     *)
@@ -719,6 +765,9 @@ agent-workspace installer
                                picked for you)
   ./install.sh doctor [--strict]
                                check engines, containers, volumes, credentials
+  ./install.sh root NAME [on|off|status]
+                               show or switch root inside the instance (off by
+                               default; the third word defaults to status)
 
 create options
   --agent NAME        agent to run (see: install.sh create --help-agents)
@@ -758,6 +807,8 @@ global options
 host paths
   containers and snapshots:  $XDG_DATA_HOME (default ~/.local/share)/agent-workspace
   credentials (mode 600):    $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/containers
+  in-instance root password: $XDG_CONFIG_HOME (default ~/.config)/agent-workspace/credentials
+                             (mode 600, present only while root is on)
 USAGE
       ;;
   esac

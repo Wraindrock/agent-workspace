@@ -7,12 +7,15 @@
 #   ${DATA_HOME}/snapshots/<name>/<snapshot-id>/home.tar.gz
 #
 # Credentials never live here; they stay in ${CONF_HOME}/containers/<name>.env
-# with mode 0600.
+# with mode 0600. The password that turns root on inside an instance is kept
+# the same way, in ${CONF_HOME}/credentials/<name>.root, and only while the
+# switch is on.
 # ---------------------------------------------------------------------------
 
 state_dir()     { printf '%s' "${DATA_HOME}/containers/${1}"; }
 meta_path()     { printf '%s' "$(state_dir "${1}")/meta"; }
 env_file_for()  { printf '%s' "${CONF_HOME}/containers/${1}.env"; }
+root_credentials_path() { printf '%s' "${CONF_HOME}/credentials/${1}.root"; }
 volume_name()   { printf '%s' "${VOLUME_PREFIX}-${1}-home"; }
 
 state_exists() { [[ -f "$(meta_path "$1")" ]]; }

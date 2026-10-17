@@ -73,29 +73,43 @@ The list itself carries the comparison:
 ## Instance root is a live boolean, not a one-time grant
 
 An agent that cannot install a package or start a service is blocked; an agent
-with permanent root is a standing risk. The balance is a switch the user can
-flip at any time in either direction:
+with permanent root is a standing risk. The balance is a switch the user flips at
+any time in either direction:
 
-- `./install.sh root <name> on|off` — effective immediately, no restart.
-- default `off` (which is also today's effective behaviour: the agent is in
-  `wheel` but `sudo` needs a password the agent does not have).
-- The agent account is created with a **high-entropy random password** that
-  nobody needs day to day: it makes password-`sudo` technically available to the
-  user while being unusable by the agent, which cannot read it (the value lives
-  in a root-only `0600` file inside the instance and is never printed by the
-  installer — only its location is).
-- `on` writes an escalation rule for **the agent user only**
-  (`/etc/sudoers.d/agent-workspace`, `NOPASSWD`) inside the instance; `off`
-  removes it. `sudo` re-reads `sudoers.d` on every invocation, so the switch is
-  effective on the agent's **next** `sudo`, with no re-login and no restart.
-- Turning the switch off **rotates the agent's password**. While the switch was
-  on the agent had full root and could have read the stored password; rotating
-  it means nothing learned during the window still works afterwards. The switch
-  is therefore genuinely reversible, not one-way.
-- The instance records the *desired* state (what the user asked for) and the
-  *observed* state (what the instance actually has); a failed probe updates only
-  the observed side.
-- `./install.sh status` shows the current value, and the toggle is logged.
+- `./install.sh root <name> on|off|status`; `status` is the default word. The
+  change is effective immediately: no restart and no re-login.
+- default `off`. The image puts the agent in `wheel`, but stock
+  `%wheel ALL=(ALL) ALL` wants a password the account does not have, and neither
+  the build nor first boot writes a passwordless rule.
+- `on` writes `/etc/sudoers.d/agent-workspace` for the agent user only
+  (`agent ALL=(ALL) NOPASSWD: ALL`, mode 0440), creating `/etc/sudoers.d` (0750)
+  first when the image lacks it. The rule is written to a temporary file in the
+  same directory, validated with `visudo -cf`, and only then installed: a rejected
+  file is removed and the command fails without ever touching the live rule.
+- `on` also gives the agent account a fresh 32-hex-character password via
+  `chpasswd` (fed on stdin, so it never appears in `argv` or the engine log) and
+  unlocks the account, then stores the value host-side at
+  `${XDG_CONFIG_HOME:-~/.config}/agent-workspace/credentials/<name>.root` (0600,
+  directory 0700, written to a temporary file and renamed). Only the path is
+  printed, never the password. `off` deletes it again and reports the count.
+- `off` removes the rule, rotates the password to a new random value that is
+  written nowhere, locks the account (`passwd -l`) and deletes the host file; it
+  then verifies that `sudo -n true` fails. Rotating is what makes the revoke
+  meaningful: while the switch was on the agent had root and could have read the
+  stored password, so nothing learned in that window keeps working.
+- The probe is `su -s /bin/sh -c 'sudo -n true' agent`, run through the backend's
+  exec verb - so it is one plain argv for containers and instances alike, and it
+  behaves like a real login (including refusing a locked account). `status`
+  reports the live answer and whether the rule file is present, and warns when
+  the two disagree: the file is *requested* state, `sudo` is *observed* state. A
+  stopped instance is refused with the command that starts it, never guessed.
+- Both directions are idempotent: `on` when already on and `off` when already off
+  re-verify and report that, changing nothing. `off` does **not** revoke
+  already-running processes: root processes the agent started keep their
+  privilege until they exit.
+- The host stores nothing else for this switch, and it does not rewrite the
+  credentials file on a failed probe: the file exists only while the switch is
+  on. All of the state that matters lives inside the instance.
 
 Why a per-user `sudoers.d` rule and not group membership: adding the agent to a
 privileged group does not affect the sessions it already has — the change only

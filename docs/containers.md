@@ -231,11 +231,18 @@ skips the prompt when there is no terminal). `--env KEY=VALUE` adds one explicit
 Nothing is baked into an image, and nothing lands in the workspace or in a snapshot.
 `fork` copies the source container's file and warns you to review it.
 
+`install.sh root <name> on` adds one more credential: the agent account's password, in
+`~/.config/agent-workspace/credentials/<name>.root` (mode `600`). It is the login you
+can use inside the instance while the in-instance-root switch is on; `off` deletes it
+and rotates the password inside the instance. See "Root inside the instance" in the
+[README](../README.md).
+
 ## What the installer keeps on this host
 
 | Path | Content |
 | --- | --- |
 | `~/.config/agent-workspace/containers/<name>.env` | the container's credentials, mode 600 |
+| `~/.config/agent-workspace/credentials/<name>.root` | the agent's password while in-instance root is on, mode 600 |
 | `~/.local/share/agent-workspace/containers/<name>/meta` | engine, agent, mode, workspace, volume, image, web port, timestamps |
 | `~/.local/share/agent-workspace/containers/<name>/meta.history` | one line per lifecycle event |
 | `~/.local/share/agent-workspace/snapshots/<name>/<id>/` | `meta` plus `home.tar.gz` (see [rollback.md](rollback.md)) |
@@ -440,6 +447,38 @@ Escape hatch: to keep the image's set out of the way while you work on your own
 profile, edit `/home/agent/.dsh/profiles/web/cordis.patch.yml` (firstboot never
 writes it again) or disable individual plugins there; to keep it out of a build
 entirely, set `45-dsh-plugins=0` in `config/modules.conf`.
+
+### Locked out of the instance after `root ... off`
+
+Symptom: after `./install.sh root dsh-box off`, logging in as `agent` inside the
+instance is refused (`Authentication failure`, or `Account is locked`), and the
+password file that used to exist under
+`~/.config/agent-workspace/credentials/` is gone. `./install.sh enter dsh-box`
+still works, because it runs as the container's default user (root), not as
+`agent`.
+
+Root cause: that is what `off` promises. It rotates the agent password to a new
+random value that is written nowhere, then locks the account (`passwd -l`), so
+nothing the agent could have read while root was on still authenticates. The old
+password is not backed up; the host file is deleted as part of the same step.
+
+Workaround: set a password you know from inside the instance, where the
+installer's exec path is still root:
+
+~~~bash
+./install.sh enter dsh-box
+passwd agent          # sets a new password and clears the lock
+~~~
+
+Turning the switch back on (`./install.sh root dsh-box on`) also restores a
+password login: it sets a fresh random password and writes it to the host file
+again. If you want to keep a working login across `off`, copy the password out of
+`~/.config/agent-workspace/credentials/<name>.root` first (mode 600, and the only
+copy).
+
+Escape hatch: none is needed to reach the agent itself - `enter` and `shell` run
+as root inside, and `sudo -u agent -i` gives you a shell as the agent without any
+password.
 
 ### Distrobox and toolbox
 

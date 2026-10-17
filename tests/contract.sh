@@ -201,7 +201,7 @@ done
 # The subcommands whose --help entry is a line of its own: the documented
 # surface, asserted entry by entry.
 for name in create list enter shell web logs start stop restart \
-  snapshot snapshots rollback recover fork upgrade remove doctor; do
+  snapshot snapshots rollback recover fork upgrade remove doctor root; do
   if help_has_subcommand "${name}"; then
     pass "install.sh --help documents ${name}"
   else

@@ -284,6 +284,40 @@ starts from the built-in `dsh`/`opencode` entries and merges the image's
 when the manifest cannot be read. Full reference:
 [docs/containers.md](docs/containers.md).
 
+## Root inside the instance
+
+The agent user has no `sudo` rights by default. Whether it may become root inside an
+instance is a live switch you control, not something fixed when the container is
+created:
+
+~~~bash
+./install.sh root dsh-box status   # default. Verified live, not by reading files
+./install.sh root dsh-box on       # /etc/sudoers.d/agent-workspace, NOPASSWD, mode 0440
+./install.sh root dsh-box off      # remove it, rotate the password, lock the account
+~~~
+
+`on` takes effect immediately: `sudo` re-reads `sudoers.d` on every call, so the
+agent's next `sudo` works with no restart and no re-login. The rule is for the agent
+user only, and it is validated with `visudo -cf` on a temporary file before it
+becomes live - a broken sudoers file is never installed. Both directions are
+idempotent: repeating the word you already have re-verifies and changes nothing.
+`status` runs `sudo -n true` as the agent and separately reports whether the rule
+file is present, so the file and what sudo actually grants are never confused. A
+stopped instance cannot answer, and says so instead of guessing.
+
+`on` also gives the agent account a fresh random password and keeps it on the host
+at `~/.config/agent-workspace/credentials/<name>.root` with mode `600`, next to the
+container credentials - the only thing the host stores for this switch, and the one
+value that lets you log in as the agent inside the instance. It is never printed;
+only the path is. `off` removes the rule, rotates that password to a value nothing
+keeps, locks the account and deletes the host file, then verifies that
+`sudo -n true` now fails.
+
+`off` does **not** revoke what is already running: a process the agent started as
+root keeps that privilege until it exits. And root inside the instance is the same
+trust domain as the agent itself - it is container root, never host root;
+[SECURITY.md](SECURITY.md) spells that boundary out.
+
 ## Opening the agent's web UI
 
 DeepSeek Harness ships a web UI. The container keeps it on its own loopback and the

@@ -58,9 +58,17 @@ rotation of anything that leaked.
   `agent` user, which first boot additionally puts in the `wheel` group
   (`runtime/lib/firstboot.sh:24`) and gives a sub-id range for rootless podman.
   So the agent can edit `/etc`, `dnf install` and run rootless containers. `sudo`
-  is installed too, but this repository ships no `sudoers`/`NOPASSWD` override and
-  the base image keeps Fedora's stock `%wheel ALL=(ALL) ALL`, which wants a
-  password the created `agent` account does not have. The image layers stay
+  is installed, but the base image keeps Fedora's stock `%wheel ALL=(ALL) ALL`, which
+  wants a password the created `agent` account does not have; no passwordless
+  escalation is configured at build or first-boot time. The one deliberate exception
+  is `./install.sh root <name> on`, which installs
+  `/etc/sudoers.d/agent-workspace` (`NOPASSWD`) for the agent user only: it is off by
+  default, `off` removes the rule, rotates the account password and locks it, and the
+  password is never echoed. Root inside the instance is the **same trust domain as
+  the agent**: it is container root, never host root. On podman/docker it still sits
+  behind the host-kernel caveat above; on incus the instance's root is a sub-uid of
+  your user. Turning it on widens what an agent mistake can reach inside the instance;
+  it does not weaken the container-to-host boundary. The image layers stay
   immutable and the writable layers belong to the container, so the blast radius
   of an agent mistake ends at `install.sh remove <name>` - but the container is
   not a security boundary against the agent itself.
